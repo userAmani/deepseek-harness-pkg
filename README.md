@@ -86,6 +86,36 @@ pnpm build              # produce the prod deployment directory build_dir/
 
 ## Release
 
+### Build all platforms from the private customized repository
+
+Add an Actions secret named `HARNESS_SOURCE_TOKEN` under Settings → Secrets and variables → Actions. Use a fine-grained personal access token with Contents: Read access limited to `userAmani/deepseek-harness`.
+
+Run **Build private Harness runtimes** manually and provide the Harness repository, branch/tag/commit, runtime SemVer, and minimum desktop version. A full commit SHA is recommended for reproducible releases.
+
+The workflow builds the same Harness commit on Windows x64, macOS arm64, macOS x64, and Linux x64. Download the resulting `harness-server-upload-*` artifact and upload its contents unchanged under the website `/harness/` path. The workflow stores no OSS credentials and performs no server upload.
+
+Local integration does not require committing Harness first. When the three repositories share one parent directory, run this repository with:
+
+```sh
+pnpm run build:private-harness -- \
+  --harness ../deepseek-harness \
+  --output dist/private-runtime \
+  --version 0.1.2-enterprise.1 \
+  --node-version 22.22.0
+```
+
+This builds only the current platform. Use **Build private Harness runtimes** for the official four-platform payload.
+
+The final manifest URL must be:
+
+```text
+https://web.shuiwujia.com/harness/channels/stable/latest.json
+```
+
+Upload `releases/` first and replace `channels/stable/latest.json` last.
+
+### Legacy upstream release (not used by the enterprise flow)
+
 Open the repository's Actions page and manually trigger **Build and Release DeepSeek Harness**:
 
 - `dsh_version`: the dsh version to package, defaults to `0.1.0-rc.6` (must match the version targeted by `patches/`, otherwise the build fails on a patch mismatch).

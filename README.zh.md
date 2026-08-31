@@ -86,6 +86,41 @@ pnpm build              # 产出 prod 部署目录 build_dir/
 
 ## 发布
 
+### 从私有二开仓库构建四个平台
+
+在仓库 Settings → Secrets and variables → Actions 中添加 `HARNESS_SOURCE_TOKEN`。该 Token 只需对 `userAmani/deepseek-harness` 具有 Contents: Read 权限；建议使用 fine-grained personal access token，并仅授权这一个源码仓库。
+
+打开 Actions，手动运行 **Build private Harness runtimes**，填写：
+
+- `harness_repository`：默认 `userAmani/deepseek-harness`。
+- `harness_ref`：要打包的分支、tag 或完整 commit SHA；正式包建议填写 commit SHA。
+- `runtime_version`：例如 `0.1.2-enterprise.1`。
+- `minimum_desktop_version`：默认 `0.6.8`。
+
+工作流会在 Windows x64、macOS arm64、macOS x64 和 Linux x64 上构建同一个 Harness 提交，最后产生 `harness-server-upload-*` Artifact。下载并解压后，将其中内容原样上传到网站 `/harness/` 目录。项目不保存 OSS 凭据，也不会自动上传服务器。
+
+本地联调不要求先提交 Harness。三个仓库位于同一父目录时，可在本仓库运行：
+
+```sh
+pnpm run build:private-harness -- \
+  --harness ../deepseek-harness \
+  --output dist/private-runtime \
+  --version 0.1.2-enterprise.1 \
+  --node-version 22.22.0
+```
+
+此命令只构建当前平台；正式四平台包仍由 **Build private Harness runtimes** 完成。
+
+最终必须能访问：
+
+```text
+https://web.shuiwujia.com/harness/channels/stable/latest.json
+```
+
+每次更新 Harness 时使用新的 `runtime_version` 和 `build-id` 路径；先上传 `releases/`，最后覆盖 `channels/stable/latest.json`。
+
+### 上游兼容发布（企业流程不使用）
+
 进入仓库的 Actions 页面，手动触发 **Build and Release DeepSeek Harness**：
 
 - `dsh_version`：要打包的 dsh 版本，默认 `0.1.0-rc.6`（需与 `patches/` 中补丁所针对的版本匹配，否则构建会因补丁失配而失败）。

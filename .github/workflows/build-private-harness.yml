@@ -1,0 +1,136 @@
+name: Build private Harness runtimes
+
+on:
+  workflow_dispatch:
+    inputs:
+      harness_repository:
+        description: Private Harness repository
+        required: true
+        default: userAmani/deepseek-harness
+        type: string
+      harness_ref:
+        description: Harness branch, tag, or commit SHA
+        required: true
+        default: master
+        type: string
+      runtime_version:
+        description: Runtime SemVer written into the desktop package
+        required: true
+        type: string
+      minimum_desktop_version:
+        description: Minimum compatible desktop version
+        required: true
+        default: 0.6.8
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22.22.0
+  PNPM_VERSION: 11.7.0
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-latest
+          - platform: macos-arm64
+            runner: macos-latest
+          - platform: macos-x64
+            runner: macos-15-intel
+          - platform: linux-x64
+            runner: ubuntu-22.04
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          HARNESS_SOURCE_TOKEN: ${{ secrets.HARNESS_SOURCE_TOKEN }}
+        run: ': "${HARNESS_SOURCE_TOKEN:?Add the HARNESS_SOURCE_TOKEN repository secret}"'
+
+      - name: Checkout packaging repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout private Harness source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.harness_repository }}
+          ref: ${{ inputs.harness_ref }}
+          token: ${{ secrets.HARNESS_SOURCE_TOKEN }}
+          path: harness
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: harness/pnpm-lock.yaml
+
+      - name: Build runtime from private Harness source
+        shell: bash
+        run: >-
+          pnpm run build:private-harness --
+          --harness harness
+          --output dist/private-runtime
+          --version "${{ inputs.runtime_version }}"
+          --node-version "$NODE_VERSION"
+
+      - name: Upload platform runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-runtime-${{ matrix.platform }}
+          path: |
+            dist/private-runtime/artifacts/*.zip
+            dist/private-runtime/artifacts/*.zip.json
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    name: Assemble manual upload directory
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout packaging repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download all platform runtimes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: harness-runtime-*
+          path: dist/private-runtime/artifacts
+          merge-multiple: true
+
+      - name: Generate release manifest and upload tree
+        shell: bash
+        run: >-
+          node scripts/generate-local-release.mjs
+          --artifacts dist/private-runtime/artifacts
+          --output dist/private-runtime/upload
+          --version "${{ inputs.runtime_version }}"
+          --build-id "${{ github.run_id }}.${{ github.run_attempt }}"
+          --minimum-desktop-version "${{ inputs.minimum_desktop_version }}"
+          --prefix /harness
+
+      - name: Upload manual server payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-server-upload-${{ inputs.runtime_version }}-${{ github.run_id }}.${{ github.run_attempt }}
+          path: dist/private-runtime/upload/harness
+          if-no-files-found: error
+          retention-days: 30
