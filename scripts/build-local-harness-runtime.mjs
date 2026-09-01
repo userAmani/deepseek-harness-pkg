@@ -192,7 +192,11 @@ async function installBundledPlugin(staging, outputRoot, plugin) {
   await rm(pluginRoot, { recursive: true, force: true })
   await mkdir(pluginRoot, { recursive: true })
   await writeFile(archivePath, archive)
-  await run('tar', ['-xzf', archivePath, '-C', pluginRoot], packageRoot)
+  if (process.platform === 'win32') {
+    await run('7z', ['x', '-y', archivePath, `-o${pluginRoot}`], packageRoot)
+  } else {
+    await run('tar', ['-xzf', archivePath, '-C', pluginRoot], packageRoot)
+  }
 
   const source = join(pluginRoot, 'package')
   const manifest = JSON.parse(await readFile(join(source, 'package.json'), 'utf8'))
