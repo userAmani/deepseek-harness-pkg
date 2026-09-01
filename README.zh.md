@@ -99,6 +99,8 @@ pnpm build              # 产出 prod 部署目录 build_dir/
 
 工作流会在 Windows x64、macOS arm64、macOS x64 和 Linux x64 上构建同一个 Harness 提交，最后产生 `harness-server-upload-*` Artifact。下载并解压后，将其中内容原样上传到网站 `/harness/` 目录。项目不保存 OSS 凭据，也不会自动上传服务器。
 
+运行包固定内置 `dsh-tauri@0.6.7`，构建时校验 npm tarball 的 SHA-512。桌面端会直接从运行包加载该基础消息桥，首次启动不再为它访问 npm 或 GitHub；其他社区插件仍由用户按需安装。
+
 本地联调不要求先提交 Harness。三个仓库位于同一父目录时，可在本仓库运行：
 
 ```sh
@@ -114,7 +116,7 @@ pnpm run build:private-harness -- \
 最终必须能访问：
 
 ```text
-https://web.shuiwujia.com/harness/channels/stable/latest.json
+https://toutiao.cdn.shuiwujia.com/harness/channels/stable/latest.json
 ```
 
 每次更新 Harness 时使用新的 `runtime_version` 和 `build-id` 路径；先上传 `releases/`，最后覆盖 `channels/stable/latest.json`。

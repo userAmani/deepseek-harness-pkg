@@ -18,6 +18,15 @@ import process from 'node:process'
 
 const packageRoot = resolve(import.meta.dirname, '..')
 const platform = resolvePlatform(process.platform, process.arch)
+const bundledPlugins = [
+  {
+    name: 'dsh-tauri',
+    version: '0.6.7',
+    tarball: 'https://registry.npmjs.org/dsh-tauri/-/dsh-tauri-0.6.7.tgz',
+    sha512: 'uWr7BmekXYcBv4Xnkr3uYAF381SdZtnbC7o5g23kl3XY+sqPpmoZi308MgfM5ltEP/fHkWXNeKr32bzVGmCyAg==',
+    webBundle: true,
+  },
+]
 
 function fail(message) {
   throw new Error(`LOCAL_HARNESS_BUILD_INVALID: ${message}`)
@@ -170,6 +179,39 @@ async function sha256(file) {
   return hash.digest('hex')
 }
 
+async function installBundledPlugin(staging, outputRoot, plugin) {
+  const response = await fetch(plugin.tarball)
+  if (!response.ok) fail(`failed to download ${plugin.name}@${plugin.version}: HTTP ${response.status}`)
+  const archive = Buffer.from(await response.arrayBuffer())
+  const actual = createHash('sha512').update(archive).digest('base64')
+  if (actual !== plugin.sha512) fail(`integrity mismatch for ${plugin.name}@${plugin.version}`)
+
+  const pluginId = `${plugin.name}-${plugin.version}`.replaceAll('/', '__')
+  const pluginRoot = join(outputRoot, 'bundled-plugins', pluginId)
+  const archivePath = `${pluginRoot}.tgz`
+  await rm(pluginRoot, { recursive: true, force: true })
+  await mkdir(pluginRoot, { recursive: true })
+  await writeFile(archivePath, archive)
+  await run('tar', ['-xzf', archivePath, '-C', pluginRoot], packageRoot)
+
+  const source = join(pluginRoot, 'package')
+  const manifest = JSON.parse(await readFile(join(source, 'package.json'), 'utf8'))
+  if (manifest.name !== plugin.name || manifest.version !== plugin.version) {
+    fail(`downloaded package identity does not match ${plugin.name}@${plugin.version}`)
+  }
+  const patch = manifest.dsh?.bundle?.patch
+  if (typeof patch !== 'string' || !existsSync(join(source, patch))) {
+    fail(`${plugin.name}@${plugin.version} does not contain a valid dsh bundle`)
+  }
+
+  const destination = join(staging, 'node_modules', ...plugin.name.split('/'))
+  await rm(destination, { recursive: true, force: true })
+  await mkdir(dirname(destination), { recursive: true })
+  await cp(source, destination, { recursive: true, dereference: true })
+  await rm(archivePath, { force: true })
+  await rm(pluginRoot, { recursive: true, force: true })
+}
+
 async function gitOutput(harnessRoot, args) {
   let stdout = ''
   await new Promise((resolvePromise, reject) => {
@@ -224,11 +266,20 @@ async function main() {
   await restoreLegacyHoists(harnessRoot, staging)
   await materializeLinks(staging)
 
+  for (const plugin of bundledPlugins) {
+    await installBundledPlugin(staging, outputRoot, plugin)
+  }
+
   await writeFile(join(staging, 'package.json'), `${JSON.stringify({
     name: 'deepseek-harness-desktop-runtime',
     version,
     private: true,
     type: 'module',
+    dsh: {
+      desktop: {
+        webBundles: bundledPlugins.filter(plugin => plugin.webBundle).map(plugin => plugin.name),
+      },
+    },
   }, null, 2)}\n`)
   await run(process.execPath, [
     join(packageRoot, 'scripts', 'apply-dsh-web-app-patch.mjs'),
@@ -251,6 +302,7 @@ async function main() {
     nodeVersion,
     sourceCommit,
     sourceDirty,
+    bundledPlugins: bundledPlugins.map(plugin => `${plugin.name}@${plugin.version}`),
     sha256: await sha256(archive),
   }
   await writeFile(`${archive}.json`, `${JSON.stringify(metadata, null, 2)}\n`)

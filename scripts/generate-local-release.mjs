@@ -76,8 +76,10 @@ async function main() {
   }
   const sourceCommits = new Set(metadata.map(value => value.sourceCommit))
   const nodeVersions = new Set(metadata.map(value => value.nodeVersion))
+  const bundledPluginSets = new Set(metadata.map(value => JSON.stringify(value.bundledPlugins ?? [])))
   if (sourceCommits.size !== 1) fail('platform archives were built from different Harness commits')
   if (nodeVersions.size !== 1) fail('platform archives target different Node.js versions')
+  if (bundledPluginSets.size !== 1) fail('platform archives contain different bundled plugins')
 
   const releaseDir = join(output, 'harness', 'releases', version, buildId)
   const channelDir = join(output, 'harness', 'channels', 'stable')
@@ -98,6 +100,7 @@ async function main() {
     sourceCommit: [...sourceCommits][0],
     sourceDirty: metadata.some(value => value.sourceDirty),
     nodeVersion: [...nodeVersions][0],
+    bundledPlugins: JSON.parse([...bundledPluginSets][0]),
     minimumDesktopVersion,
     assets,
   }

@@ -94,6 +94,8 @@ Run **Build private Harness runtimes** manually and provide the Harness reposito
 
 The workflow builds the same Harness commit on Windows x64, macOS arm64, macOS x64, and Linux x64. Download the resulting `harness-server-upload-*` artifact and upload its contents unchanged under the website `/harness/` path. The workflow stores no OSS credentials and performs no server upload.
 
+The runtime pins `dsh-tauri@0.6.7` and verifies the npm tarball SHA-512 during the build. The desktop loads this required message bridge directly from the runtime, so first launch does not fetch it from npm or GitHub. Other community plugins remain optional user installs.
+
 Local integration does not require committing Harness first. When the three repositories share one parent directory, run this repository with:
 
 ```sh
@@ -109,7 +111,7 @@ This builds only the current platform. Use **Build private Harness runtimes** fo
 The final manifest URL must be:
 
 ```text
-https://web.shuiwujia.com/harness/channels/stable/latest.json
+https://toutiao.cdn.shuiwujia.com/harness/channels/stable/latest.json
 ```
 
 Upload `releases/` first and replace `channels/stable/latest.json` last.

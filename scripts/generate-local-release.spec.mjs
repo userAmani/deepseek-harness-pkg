@@ -23,6 +23,7 @@ test('generates a manually uploadable partial release', async () => {
       nodeVersion: '22.22.0',
       sourceCommit: 'abcdef123456',
       sourceDirty: true,
+      bundledPlugins: ['dsh-tauri@0.6.7'],
       sha256: 'a'.repeat(64),
     })}\n`)
 
@@ -42,6 +43,7 @@ test('generates a manually uploadable partial release', async () => {
       'utf8',
     ))
     assert.equal(manifest.sourceDirty, true)
+    assert.deepEqual(manifest.bundledPlugins, ['dsh-tauri@0.6.7'])
     assert.deepEqual(manifest.assets['macos-arm64'], {
       path: '/harness/releases/1.2.3/20260831.1/deepseek-harness-runtime-macos-arm64.zip',
       sha256: 'a'.repeat(64),
