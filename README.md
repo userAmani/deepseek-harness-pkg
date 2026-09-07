@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/hairyf/deepseek-harness-pkg">
+  <a href="https://github.com/dsh-tauri-desk/deepseek-harness-pkg">
     <img src="public/favicon.svg" width="112" alt="DeepSeek Harness Pkg" />
   </a>
 </p>
@@ -27,21 +27,21 @@
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) is an open-source agent harness with a CLI, a web UI, and a plugin architecture. Setting it up normally means installing Node.js and pnpm and building from source.
 
-This repository (inspired by [n8n-pkg](https://github.com/hairyf/n8n-pkg)) removes that friction: it pins an upstream npm release, patches the dependency closure, and publishes ready-to-run `node_modules` bundles for Windows, macOS (Apple Silicon + Intel), and Linux. Consumers just download a zip from the [Releases](https://github.com/hairyf/deepseek-harness-pkg/releases) page, unzip, and run `dsh web`.
+This repository (inspired by [n8n-pkg](https://github.com/hairyf/n8n-pkg)) removes that friction: it pins an upstream npm release, patches the dependency closure, and publishes ready-to-run `node_modules` bundles for Windows, macOS (Apple Silicon + Intel), and Linux. Consumers just download a zip from the [Releases](https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases) page, unzip, and run `dsh web`.
 
 ## Features
 
 | | |
 | --- | --- |
-| **Pinned & reproducible** | A pnpm workspace pins a single upstream version (`@deepseek-ai/dsh`), with patches recorded in `patches/` and a committed lockfile. |
-| **Patched dependency closure** | `patchedDependencies` patches packages inside the dependency closure, including a LAN-access switch for `dsh web`. |
+| **Pinned & reproducible** | A pnpm workspace pins a single upstream version (`@deepseek-ai/dsh`), with a committed lockfile. |
+| **Patched dependency closure** | A build-time script applies a LAN-access switch to `dsh web` inside the dependency closure. |
 | **Cross-platform artifacts** | CI builds bundles for Windows, macOS (arm64 + x64), and Linux and publishes them as GitHub Releases. |
 | **Auto-sync with upstream** | A scheduled workflow watches npm for new `dsh` versions and triggers a rebuild automatically. |
 | **Self-contained output** | Each artifact is a plain npm project — unzip, run the `dsh` binary inside `node_modules`, done. |
 
 ## Quick Start
 
-1. Download the artifact for your platform from the [Releases](https://github.com/hairyf/deepseek-harness-pkg/releases) page.
+1. Download the artifact for your platform from the [Releases](https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases) page.
 2. Unzip the archive.
 3. Run:
 
@@ -68,8 +68,7 @@ The web UI opens at `http://127.0.0.1:3080`. On first use, configure a model pro
 │   └── sync-source-release.yml     # scheduled GitHub Release check for source builds
 ├── scripts/
 │   └── apply-dsh-web-app-patch.mjs # idempotent patch script (re-applies the LAN switch on version bumps)
-├── patches/                        # pnpm patches (patchedDependencies, version-pinned & reproducible)
-├── pnpm-workspace.yaml             # nodeLinker / build policy / patchedDependencies (pnpm 11 settings)
+├── pnpm-workspace.yaml             # nodeLinker / build policy (pnpm 11 settings)
 ├── package.json                    # pinned @deepseek-ai/dsh version
 └── pnpm-lock.yaml                  # lockfile
 ```
@@ -79,7 +78,7 @@ The web UI opens at `http://127.0.0.1:3080`. On first use, configure a model pro
 Requirements: Node.js `>=22.19` (recommended 24), pnpm `11.x` (the repo declares `packageManager: pnpm@11.7.0`).
 
 ```sh
-pnpm install            # install dependencies and apply patches
+pnpm install            # install dependencies
 pnpm start              # run dsh web directly (http://127.0.0.1:3080)
 pnpm build              # produce the prod deployment directory build_dir/
 ```
@@ -120,7 +119,7 @@ Upload `releases/` first and replace `channels/stable/latest.json` last.
 
 Open the repository's Actions page and manually trigger **Build and Release DeepSeek Harness**:
 
-- `dsh_version`: the dsh version to package, defaults to `0.1.0-rc.6` (must match the version targeted by `patches/`, otherwise the build fails on a patch mismatch).
+- `dsh_version`: the dsh version to package, defaults to the version declared in `package.json` (`0.1.2-rc.1`).
 
 The build creates a GitHub Release named `dsh-<version>-<run_id>` with four platform zips:
 
@@ -135,7 +134,7 @@ The build creates a GitHub Release named `dsh-<version>-<run_id>` with four plat
 
 ### dsh-web-app: LAN access (default off)
 
-Upstream `dsh web` rejects `--host 0.0.0.0` for security reasons (it would expose the remote-code-execution surface to the network). The `patches/dsh-web-app@0.1.0-rc.6.patch` patch turns this into an **explicit environment-variable switch**:
+Upstream `dsh web` rejects `--host 0.0.0.0` for security reasons (it would expose the remote-code-execution surface to the network). A build-time patch script (`scripts/apply-dsh-web-app-patch.mjs`) turns this into an **explicit environment-variable switch**:
 
 ```sh
 # still rejected by default
@@ -147,13 +146,9 @@ DSH_PKG_ALLOW_LAN=1 dsh web --host 0.0.0.0 --trusted-host <LAN-IP>:3080
 
 > ⚠️ Security warning: `--host 0.0.0.0` lets any device on your LAN access your sessions and tool execution. Use it only in trusted networks and pair it with `--trusted-host` to restrict the `/api` trust domain.
 
-### Adding or updating patches
+### How the LAN switch is applied
 
-```sh
-pnpm patch @deepseek-ai/dsh-web-app   # edit, then pnpm patch-commit to produce a .patch
-```
-
-Then register the new entry under `patchedDependencies` in `pnpm-workspace.yaml` (the version must match what the lockfile resolves). When upgrading dsh, `patches/` must be updated accordingly.
+`scripts/apply-dsh-web-app-patch.mjs` is applied idempotently during packaging (see the "Apply dsh-web-app patch" step in `release.yml` / `release-from-source.yml`): it only needs the upstream guard line to exist, and fails loudly with a message to update the script if upstream changes it. There is no pnpm `patchedDependencies` entry anymore — the previous `patches/dsh-web-app@0.1.0-rc.6.patch` was removed when it went stale.
 
 ## Auto-sync Upstream Releases
 

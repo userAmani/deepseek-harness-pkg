@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-patchedDependencies:
-  '@deepseek-ai/dsh-web-app@0.1.0-rc.6': 3733f038b6a1cf074495315213f4cb2b709718f9b9b09c79f5cbbce3415bcc10
-
 importers:
 
   .:

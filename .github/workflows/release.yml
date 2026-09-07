@@ -41,7 +41,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          # 必须与 desktop 捆绑运行时保持一致（src-tauri/src/config/constants.rs 的 NODE_VERSION）。
+          # 原生依赖（如 fs-ext）会在构建期编译，ABI 只匹配同一大版本的运行时。
+          node-version: 22.22.0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
