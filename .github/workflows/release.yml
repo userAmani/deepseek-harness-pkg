@@ -86,10 +86,14 @@ jobs:
         working-directory: build_dir
         run: |
           # 根据不同平台使用对应的压缩命令
+          # 注意：patches 目录已随 799ce3ba 移除（dsh-web-app 补丁改为
+          # scripts/apply-dsh-web-app-patch.mjs 直接打进 node_modules），
+          # 不能再列入打包清单——7z 对缺失路径返回非零退出码会导致 Windows
+          # 打包失败（zip 仅告警，这也是此前只有 Windows 失败的原因）。
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a ../${{ matrix.artifact_name }} node_modules package.json package-lock.json patches
+            7z a ../${{ matrix.artifact_name }} node_modules package.json package-lock.json
           else
-            zip -r ../${{ matrix.artifact_name }} node_modules package.json package-lock.json patches
+            zip -r ../${{ matrix.artifact_name }} node_modules package.json package-lock.json
           fi
 
       - name: Upload Artifact
