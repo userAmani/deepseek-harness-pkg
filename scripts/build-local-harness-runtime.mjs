@@ -265,6 +265,10 @@ async function main() {
     '--config.node-linker=hoisted',
     '--config.auto-install-peers=false',
     '--config.link-workspace-packages=true',
+    // 过滤部署只解析该闭包。workspace 根的 patchedDependencies 若含闭包外的包
+    // （如 apps/desktop 的 @electron/osx-sign），pnpm 会以 ERR_PNPM_UNUSED_PATCH
+    // 中止整个构建；此处降级为警告——补丁是否命中本闭包不影响运行时正确性。
+    '--config.allowUnusedPatches=true',
     staging,
   ], harnessRoot)
   await restoreLegacyHoists(harnessRoot, staging)
