@@ -251,7 +251,10 @@ async function main() {
   await rm(staging, { recursive: true, force: true })
 
   if (!options['skip-install']) await runPnpm(['install', '--frozen-lockfile'], harnessRoot)
-  if (!options['skip-build']) await runPnpm(['run', 'build:official'], harnessRoot)
+  if (!options['skip-build']) {
+    await runPnpm(['run', 'clean'], harnessRoot)
+    await runPnpm(['run', 'build:official'], harnessRoot)
+  }
   await runPnpm(['run', 'verify-runtime-closure'], harnessRoot)
   await runPnpm([
     '--filter',
