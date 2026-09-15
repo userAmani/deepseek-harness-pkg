@@ -55,7 +55,7 @@ node_modules\.bin\dsh.cmd web
 
 The web UI opens at `http://127.0.0.1:3080`. On first use, configure a model provider (API key) in the UI — see the [official DeepSeek Harness docs](https://github.com/deepseek-ai/deepseek-harness).
 
-> Requirements: Node.js `^22.19.0` or `>=24.0.0`. The artifact is a plain npm project, so no global pnpm installation is needed.
+> Requirements: Node.js `>=22.19.0` (CI builds use 22.22.0). The artifact is a plain npm project, so no global pnpm installation is needed.
 
 ## Repository Structure
 
@@ -119,7 +119,7 @@ Upload `releases/` first and replace `channels/stable/latest.json` last.
 
 Open the repository's Actions page and manually trigger **Build and Release DeepSeek Harness**:
 
-- `dsh_version`: the dsh version to package, defaults to the version declared in `package.json` (`0.1.2-rc.1`).
+- `dsh_version`: the dsh version to package, defaults to the version declared in `package.json` (`0.1.5-rc.2`). Use `latest` or another explicit version when needed.
 
 The build creates a GitHub Release named `dsh-<version>-<run_id>` with four platform zips:
 

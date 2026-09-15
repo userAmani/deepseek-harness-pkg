@@ -55,7 +55,7 @@ node_modules\.bin\dsh.cmd web
 
 Web UI 会打开在 `http://127.0.0.1:3080`。首次使用需要在界面里配置模型提供方（API Key），详见 [DeepSeek Harness 官方文档](https://github.com/deepseek-ai/deepseek-harness)。
 
-> 要求：Node.js `^22.19.0` 或 `>=24.0.0`。产物是纯 npm 项目，无需全局安装 pnpm。
+> 要求：Node.js `>=22.19.0`（CI 构建使用 22.22.0）。产物是纯 npm 项目，无需全局安装 pnpm。
 
 ## 目录结构
 
@@ -78,7 +78,7 @@ Web UI 会打开在 `http://127.0.0.1:3080`。首次使用需要在界面里配�
 要求：Node.js `>=22.19`（推荐 24）、pnpm `11.x`（仓库已声明 `packageManager: pnpm@11.7.0`）。
 
 ```sh
-pnpm install            # 安装依赖并应用补丁
+pnpm install            # 安装依赖；LAN 补丁仅在 CI 打包步骤显式应用
 pnpm start              # 本地直接运行：dsh web（http://127.0.0.1:3080）
 pnpm build              # 产出 prod 部署目录 build_dir/
 ```
@@ -124,7 +124,7 @@ https://toutiao.cdn.shuiwujia.com/harness/channels/stable/latest.json
 
 进入仓库的 Actions 页面，手动触发 **Build and Release DeepSeek Harness**：
 
-- `dsh_version`：要打包的 dsh 版本，默认使用 `package.json` 中声明的版本（`0.1.2-rc.1`）。
+- `dsh_version`：要打包的 dsh 版本，默认使用 `package.json` 中声明的版本（`0.1.5-rc.2`）。需要时可填写 `latest` 或其他明确版本。
 
 构建完成后会自动创建形如 `dsh-<版本>-<run_id>` 的 GitHub Release，附四个平台的 zip：
 
