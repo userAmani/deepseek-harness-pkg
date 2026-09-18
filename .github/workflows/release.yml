@@ -139,7 +139,11 @@ jobs:
         # 需要定位来源时用：node scripts/zip-footprint.mjs <产物.zip>
         run: |
           set -euo pipefail
-          node scripts/check-artifact-size.mjs --dir=./artifacts
+          # 这一步按设计「只报告、不拦截」：报表脚本自己崩了（run 35294661283 就是
+          # `total is not defined`）不该把整轮发布挡在下游步骤之前。失败降级为一条
+          # warning 注解，数字仍然留在日志里；产物是否齐全由上传/校验步骤负责。
+          node scripts/check-artifact-size.mjs --dir=./artifacts \
+            || echo "::warning::artifact size report failed; see log above"
 
           previous_tag="$(gh release list --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')"
           if [ -n "$previous_tag" ]; then

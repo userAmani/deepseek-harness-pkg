@@ -64,6 +64,8 @@ const rows = collectZips(dir)
   .filter(Boolean)
   .sort((a, b) => b.size - a.size)
 
+const total = rows.reduce((sum, row) => sum + row.size, 0)
+
 if (rows.length === 0) {
   // 不拦发布，但要让这种情况显式可见：没有产物本身就是异常信号。
   console.log(`[artifact-size] 警告：${dir} 下没有找到任何 .zip`)

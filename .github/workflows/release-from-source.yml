@@ -257,8 +257,9 @@ jobs:
           path: ./artifacts
 
       - name: Report artifact sizes
-        # 只报告、不拦截（原因见 release.yml 的 "Report artifact sizes"）。
-        run: node scripts/check-artifact-size.mjs --dir=./artifacts
+        # 只报告、不拦截（原因见 release.yml 的 "Report artifact sizes"）。脚本失败
+        # 同样不阻断发布，只降级为 warning 注解。
+        run: node scripts/check-artifact-size.mjs --dir=./artifacts || echo "::warning::artifact size report failed; see log above"
 
       - name: Delete stale drafts for this version
         # 上一次尝试失败会留下半成品 draft；draft 没有 git ref，既不会被
