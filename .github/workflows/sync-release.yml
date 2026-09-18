@@ -26,6 +26,7 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       changed: ${{ steps.resolve.outputs.changed }}
@@ -56,6 +57,8 @@ jobs:
 
           # 上次 npm 构建发布的版本，从最新的非 pre-release tag
           # `dsh-<version>-<run_id>` 解析；源码 pre-release 不应干扰 npm 同步。
+          # 注意：失败尝试留下的 draft 不会被这里看到（draft 在该列表里不可见），
+          # 清除这类残留由下面的 stale draft 步骤负责。
           last=""
           if gh release list --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' >/tmp/last_release.txt 2>/tmp/last_release.err; then
             tag="$(cat /tmp/last_release.txt)"
@@ -74,6 +77,18 @@ jobs:
 
           echo "version=$target" >> "$GITHUB_OUTPUT"
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Clear stale drafts for target version
+        # 上一次失败尝试会留下半成品 draft（run 35242697914 就是这样：release
+        # 建好了但资产只传了一个）。draft 没有 git ref，只能通过 API 按 draft
+        # 列表找到，所以 `last released version` 那一步看不到它。
+        # 这里在【构建之前】就清掉，因为每个 run 的 tag 都带自己的 run_id：
+        # 不清理的话，本次 run 若是重跑（attempt 2+）就会和 attempt 1 的残留
+        # draft 撞车；先清掉，才能保证一个 run 对应一套产物。
+        if: ${{ steps.resolve.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/delete-stale-drafts.mjs --prefix="dsh-${{ steps.resolve.outputs.version }}-"
 
   build:
     needs: sync

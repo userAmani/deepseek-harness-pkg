@@ -20,6 +20,8 @@ jobs:
   build:
     name: Build from source on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # 与 release job 同理：卡住的步骤不该一直占着 runner 直到 6 小时默认上限。
+    timeout-minutes: 60
     strategy:
       matrix:
         os: [windows-latest, macos-latest, macos-15-intel, ubuntu-latest]
@@ -178,6 +180,14 @@ jobs:
           exit $LASTEXITCODE
           EOF
 
+      - name: Report deploy footprint
+        shell: bash
+        working-directory: upstream/build_dir
+        # 只报告不删除：用于回答“体积膨胀来自哪个依赖”。保留项很大而可回收项
+        # 很小，说明原因不在瘦身规则（例如交叉平台的 node-pty / sharp 原生
+        # 二进制被打进了每个平台包）。
+        run: node ../../scripts/prune-node-modules.mjs --report-only --dir=node_modules --list-dir=test --list-dir=__tests__
+
       - name: Apply dsh-web-app patch
         shell: bash
         working-directory: upstream/build_dir
@@ -205,12 +215,11 @@ jobs:
           node node_modules/@deepseek-ai/dsh/lib/bin.js web --help >/tmp/dsh-web-help.txt
           grep -q 'Serve the DeepSeek Harness browser UI' /tmp/dsh-web-help.txt
 
-      - name: Cleanup unnecessary files
+      - name: Prune node_modules
         shell: bash
         working-directory: upstream/build_dir
-        run: |
-          find node_modules -type f \( -name '*.map' -o -name '*.ts' -o -name '*.mts' \) -delete || true
-          find node_modules -type d \( -name test -o -name tests -o -name benchmark -o -name example -o -name demo \) -exec rm -rf {} + || true
+        # 统一瘦身逻辑收敛到脚本里（跨平台支持），同时打印删除前后的体积构成。
+        run: node ../../scripts/prune-node-modules.mjs --dir=node_modules
 
       - name: Create archive
         shell: bash
@@ -231,24 +240,93 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # 上传通道退化时 step 会挂着不动（见 release.yml 顶部说明）。旧配置没有超时，
+    # 卡住的上传会一直占着 runner 直到 6 小时默认上限，白烧额度。
+    timeout-minutes: 20
+    env:
+      TAG: dsh-src-${{ inputs.dsh_version || github.event.inputs.dsh_version }}-${{ github.run_id }}
+      DSH_VERSION: ${{ inputs.dsh_version || github.event.inputs.dsh_version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Checkout packaging repository
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: ./artifacts
 
+      - name: Report artifact sizes
+        # 只报告、不拦截（原因见 release.yml 的 "Report artifact sizes"）。
+        run: node scripts/check-artifact-size.mjs --dir=./artifacts
+
+      - name: Delete stale drafts for this version
+        # 上一次尝试失败会留下半成品 draft；draft 没有 git ref，既不会被
+        # `gh release list --exclude-pre-releases` 看到，也无法用 tag 查到，
+        # 必须先清掉，重跑才干净。
+        run: node scripts/delete-stale-drafts.mjs --prefix="dsh-src-${DSH_VERSION}-"
+
       - name: Create GitHub pre-release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: dsh-src-${{ inputs.dsh_version || github.event.inputs.dsh_version }}-${{ github.run_id }}
-          name: Pre-release-dsh-${{ inputs.dsh_version || github.event.inputs.dsh_version }}
-          body: |
-            # DeepSeek Harness source pre-release
-            - Version: ${{ inputs.dsh_version || github.event.inputs.dsh_version }}
-            - Build ID: ${{ github.run_id }}
-            - Built from upstream GitHub Release source because npm did not yet publish this version.
-            - 使用说明见仓库 README.md
-          draft: false
-          prerelease: true
-          files: |
-            ./artifacts/**/*.zip
+        run: |
+          set -euo pipefail
+          # 不指定 --target，保持与 softprops/action-gh-release 一致的行为
+          # （新 tag 落在仓库默认分支上）。tag 一律新建：本次 run 的 tag 尚未
+          # 创建，历史 draft 已被上一步删除，所以这里的 tag 不会冲突。
+          release_url="$(gh release create "$TAG" \
+            --title "Pre-release-dsh-${DSH_VERSION}" \
+            --prerelease \
+            --notes "$(printf '%s\n' \
+              '# DeepSeek Harness source pre-release' \
+              "- Version: ${DSH_VERSION}" \
+              "- Build ID: ${GITHUB_RUN_ID}" \
+              '- Built from upstream GitHub Release source because npm did not yet publish this version.' \
+              '- 使用说明见仓库 README.md')")"
+          echo "created pre-release: $release_url"
+          {
+            echo "### Published pre-release"
+            echo
+            echo "$release_url"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload assets one by one with retry
+        # 串行上传 + 逐包重试，替代 softprops/action-gh-release 的并发上传
+        # （该 action 用 Promise.all 同时传全部资产并把每个文件整体读进内存，
+        # softprops/action-gh-release#243；4 条连接平分退化带宽更容易整体超时，
+        # 失败后也无法逐包续传）。`gh release upload` 是流式单连接上传，
+        # --clobber 允许重跑覆盖。
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(./artifacts/**/*.zip)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "no assets found under ./artifacts; refusing to publish an empty release" >&2
+            exit 1
+          fi
+          for asset in "${assets[@]}"; do
+            attempt=1
+            max_attempts=4
+            until gh release upload "$TAG" "$asset" --clobber; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "upload failed after ${max_attempts} attempts: $asset" >&2
+                exit 1
+              fi
+              delay=$((15 * attempt))
+              echo "upload failed for $asset (attempt ${attempt}/${max_attempts}), retrying in ${delay}s" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+            done
+            echo "uploaded $asset"
+          done
+
+      - name: Verify release assets
+        # 显式确认四个包都在，避免发布出残缺 pre-release。
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.size)  \(.name)"'
+          count="$(gh release view "$TAG" --json assets --jq '.assets | length')"
+          expected=4
+          if [ "$count" -lt "$expected" ]; then
+            echo "expected ${expected} assets on ${TAG}, found ${count}" >&2
+            exit 1
+          fi
+          echo "pre-release ${TAG} is complete"
