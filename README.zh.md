@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/dsh-tauri-desk/deepseek-harness-pkg">
+  <a href="https://github.com/dsh-tauri/deepseek-harness-pkg">
     <img src="public/favicon.svg" width="112" alt="DeepSeek Harness Pkg" />
   </a>
 </p>
@@ -27,7 +27,7 @@
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）是开源的 Agent 工作台，包含 CLI、Web UI 与插件架构。常规安装需要自己装 Node.js、pnpm 并从头构建。
 
-本仓库（参考 [n8n-pkg](https://github.com/hairyf/n8n-pkg)）省掉这些麻烦：固定一个上游 npm 版本、对依赖闭包打补丁，并通过 GitHub Actions 产出 Windows、macOS（Apple Silicon + Intel）、Linux 三个平台可直接运行的 `node_modules` 压缩包。使用者只需从 [Releases](https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases) 下载对应平台的 zip，解压后运行 `dsh web` 即可。
+本仓库（参考 [n8n-pkg](https://github.com/hairyf/n8n-pkg)）省掉这些麻烦：固定一个上游 npm 版本、对依赖闭包打补丁，并通过 GitHub Actions 产出 Windows、macOS（Apple Silicon + Intel）、Linux 三个平台可直接运行的 `node_modules` 压缩包。使用者只需从 [Releases](https://github.com/dsh-tauri/deepseek-harness-pkg/releases) 下载对应平台的 zip，解压后运行 `dsh web` 即可。
 
 ## 特性
 
@@ -41,7 +41,7 @@
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases) 页面下载对应平台的产物。
+1. 从 [Releases](https://github.com/dsh-tauri/deepseek-harness-pkg/releases) 页面下载对应平台的产物。
 2. 解压。
 3. 运行：
 
@@ -64,10 +64,20 @@ Web UI 会打开在 `http://127.0.0.1:3080`。首次使用需要在界面里配�
 ├── .github/workflows/
 │   ├── release.yml                 # 基于 npm 的跨平台构建 + 发布
 │   ├── release-from-source.yml     # GitHub-only 版本的源码构建 + pre-release
-│   ├── sync-release.yml             # 定时检测 npm 版本并自动构建
-│   └── sync-source-release.yml      # 定时检测 GitHub Release 并触发源码构建
+│   ├── sync-release.yml            # 定时检测 npm 版本并自动构建
+│   └── sync-source-release.yml     # 定时检测 GitHub Release 并触发源码构建
 ├── scripts/
-│   └── apply-dsh-web-app-patch.mjs # 幂等补丁脚本（换版本也能自动打上 LAN 开关补丁）
+│   ├── apply-dsh-web-app-patch.mjs               # 幂等应用 LAN 开关补丁（上游 guard 变更时明确失败）
+│   ├── check-artifact-size.mjs                   # 报告发布产物体积（只报告、不拦截）
+│   ├── check-workflows.mjs                       # 本地自检 .github/workflows/*.yml
+│   ├── selftest-check-workflows.mjs              # check-workflows.mjs 的反向测试（仅本地自检）
+│   ├── delete-stale-drafts.mjs                   # 清理同版本残留的 draft release，保证重跑幂等
+│   ├── prune-node-modules.mjs                    # 打包前瘦身 node_modules 并输出体积报告
+│   ├── resolve-latest-dsh-version.mjs            # 取 npm 所有 dist-tag 中 semver 最高的已发布版本
+│   ├── resolve-latest-github-release-version.mjs # 取上游 GitHub Release 中 semver 最高的版本
+│   └── zip-footprint.mjs                         # 只读汇总 zip 的体积构成（不解压）
+├── public/
+│   └── favicon.svg                 # README 图标
 ├── pnpm-workspace.yaml             # nodeLinker/构建脚本策略等（pnpm 11 设置统一在此）
 ├── package.json                    # 固定 @deepseek-ai/dsh 版本
 └── pnpm-lock.yaml                  # 锁文件
@@ -124,7 +134,7 @@ https://toutiao.cdn.shuiwujia.com/harness/channels/stable/latest.json
 
 进入仓库的 Actions 页面，手动触发 **Build and Release DeepSeek Harness**：
 
-- `dsh_version`：要打包的 dsh 版本，默认使用 `package.json` 中声明的版本（`0.1.5-rc.2`）。需要时可填写 `latest` 或其他明确版本。
+- `dsh_version`（必填）：要打包的 dsh 版本。Actions 表单会预填 `release.yml` 中写死的默认值（`0.1.2-rc.1`）；本仓库当前在 `package.json` 中固定 `@deepseek-ai/dsh` 为 `0.1.6-alpha.2`。需要时可填写 `latest` 或其他明确版本。
 
 构建完成后会自动创建形如 `dsh-<版本>-<run_id>` 的 GitHub Release，附四个平台的 zip：
 
@@ -201,7 +211,7 @@ flowchart LR
 | 项目 | 用途 |
 | --- | --- |
 | [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | 上游 `dsh`（CLI + Web UI + 插件架构） |
-| [deepseek-harness-desktop](https://github.com/hairyf/deepseek-harness-desktop) | 一键桌面应用，消费本仓库产出的预构建包 |
+| [deepseek-harness-desktop](https://github.com/dsh-tauri/deepseek-harness-desktop) | 一键桌面应用，消费本仓库产出的预构建包 |
 | [n8n-pkg](https://github.com/hairyf/n8n-pkg) | 本仓库所参考的打包分发仓库 |
 
 ## 致谢

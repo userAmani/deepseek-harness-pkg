@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/dsh-tauri-desk/deepseek-harness-pkg">
+  <a href="https://github.com/dsh-tauri/deepseek-harness-pkg">
     <img src="public/favicon.svg" width="112" alt="DeepSeek Harness Pkg" />
   </a>
 </p>
@@ -19,7 +19,7 @@
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black?style=flat-square" alt="Windows | macOS | Linux" />
   <img src="https://img.shields.io/badge/pnpm-11-4D6BFE?style=flat-square&logo=pnpm&logoColor=white" alt="pnpm 11" />
   <img src="https://img.shields.io/badge/Node.js-22.19%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 22.19+" />
-  <img src="https://img.shields.io/github/downloads/hairyf/deepseek-harness-pkg/total?style=flat-square&label=downloads&color=4D6BFE" alt="Downloads" />
+  <img src="https://img.shields.io/github/downloads/dsh-tauri/deepseek-harness-pkg/total?style=flat-square&label=downloads&color=4D6BFE" alt="Downloads" />
 </p>
 > **Status: developer preview.** The upstream `dsh` is still iterating rapidly with compatibility-breaking changes; this repository tracks it closely and rebuilds automatically.
 
@@ -27,7 +27,7 @@
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) is an open-source agent harness with a CLI, a web UI, and a plugin architecture. Setting it up normally means installing Node.js and pnpm and building from source.
 
-This repository (inspired by [n8n-pkg](https://github.com/hairyf/n8n-pkg)) removes that friction: it pins an upstream npm release, patches the dependency closure, and publishes ready-to-run `node_modules` bundles for Windows, macOS (Apple Silicon + Intel), and Linux. Consumers just download a zip from the [Releases](https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases) page, unzip, and run `dsh web`.
+This repository (inspired by [n8n-pkg](https://github.com/hairyf/n8n-pkg)) removes that friction: it pins an upstream npm release, patches the dependency closure, and publishes ready-to-run `node_modules` bundles for Windows, macOS (Apple Silicon + Intel), and Linux. Consumers just download a zip from the [Releases](https://github.com/dsh-tauri/deepseek-harness-pkg/releases) page, unzip, and run `dsh web`.
 
 ## Features
 
@@ -41,7 +41,7 @@ This repository (inspired by [n8n-pkg](https://github.com/hairyf/n8n-pkg)) remov
 
 ## Quick Start
 
-1. Download the artifact for your platform from the [Releases](https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases) page.
+1. Download the artifact for your platform from the [Releases](https://github.com/dsh-tauri/deepseek-harness-pkg/releases) page.
 2. Unzip the archive.
 3. Run:
 
@@ -67,7 +67,17 @@ The web UI opens at `http://127.0.0.1:3080`. On first use, configure a model pro
 │   ├── sync-release.yml            # scheduled npm check that auto-triggers builds
 │   └── sync-source-release.yml     # scheduled GitHub Release check for source builds
 ├── scripts/
-│   └── apply-dsh-web-app-patch.mjs # idempotent patch script (re-applies the LAN switch on version bumps)
+│   ├── apply-dsh-web-app-patch.mjs               # idempotent LAN-switch patch (fails loudly if the upstream guard changes)
+│   ├── check-artifact-size.mjs                   # reports release asset sizes (never blocks)
+│   ├── check-workflows.mjs                       # local self-check of .github/workflows/*.yml
+│   ├── selftest-check-workflows.mjs              # reverse tests for check-workflows.mjs
+│   ├── delete-stale-drafts.mjs                   # clears leftover draft releases so re-runs are idempotent
+│   ├── prune-node-modules.mjs                    # slims node_modules before packaging + size report
+│   ├── resolve-latest-dsh-version.mjs            # semver-highest published npm version across all dist-tags
+│   ├── resolve-latest-github-release-version.mjs # semver-highest upstream GitHub Release version
+│   └── zip-footprint.mjs                         # size breakdown of a built zip (read-only)
+├── public/
+│   └── favicon.svg                 # README logo
 ├── pnpm-workspace.yaml             # nodeLinker / build policy (pnpm 11 settings)
 ├── package.json                    # pinned @deepseek-ai/dsh version
 └── pnpm-lock.yaml                  # lockfile
@@ -119,7 +129,7 @@ Upload `releases/` first and replace `channels/stable/latest.json` last.
 
 Open the repository's Actions page and manually trigger **Build and Release DeepSeek Harness**:
 
-- `dsh_version`: the dsh version to package, defaults to the version declared in `package.json` (`0.1.5-rc.2`). Use `latest` or another explicit version when needed.
+- `dsh_version` (required): the dsh version to package. The Actions form pre-fills the literal default declared in `release.yml` (`0.1.2-rc.1`); this repository currently pins `@deepseek-ai/dsh` at `0.1.6-alpha.2` in `package.json`. Use `latest` or another explicit version when needed.
 
 The build creates a GitHub Release named `dsh-<version>-<run_id>` with four platform zips:
 
@@ -196,7 +206,7 @@ flowchart LR
 | Project | Purpose |
 | --- | --- |
 | [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | The upstream `dsh` (CLI + web UI + plugin architecture) |
-| [deepseek-harness-desktop](https://github.com/hairyf/deepseek-harness-desktop) | One-click desktop app that consumes these prebuilt bundles |
+| [deepseek-harness-desktop](https://github.com/dsh-tauri/deepseek-harness-desktop) | One-click desktop app that consumes these prebuilt bundles |
 | [n8n-pkg](https://github.com/hairyf/n8n-pkg) | Reference packaging repository this project is based on |
 
 ## Acknowledgements
