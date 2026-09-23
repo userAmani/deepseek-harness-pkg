@@ -75,6 +75,7 @@ The web UI opens at `http://127.0.0.1:3080`. On first use, configure a model pro
 │   ├── prune-node-modules.mjs                    # slims node_modules before packaging + size report
 │   ├── resolve-latest-dsh-version.mjs            # semver-highest published npm version across all dist-tags
 │   ├── resolve-latest-github-release-version.mjs # semver-highest upstream GitHub Release version
+│   ├── wait-for-npm-version.mjs                  # polls npm until a just-published version's tarball is downloadable
 │   └── zip-footprint.mjs                         # size breakdown of a built zip (read-only)
 ├── public/
 │   └── favicon.svg                 # README logo
@@ -167,6 +168,7 @@ The repository has two complementary scheduled workflows:
 - **npm path — `sync-release.yml`**: checks every 6 hours and can also be triggered manually. It resolves the **semver-highest published version** through `scripts/resolve-latest-dsh-version.mjs`, covering all npm dist-tags (`latest`, `next`, …), then calls `release.yml`. After a successful npm release it updates `main` and the lockfile.
 - **GitHub-only path — `sync-source-release.yml`**: checks every 6 hours whether the semver-highest upstream GitHub Release is newer than npm `@deepseek-ai/dsh`. If npm has not published that version yet, it calls `release-from-source.yml`, which clones the exact `dsh-v<version>` tag, runs `pnpm install` and `pnpm run build`, deploys the built workspace closure, and publishes four platform archives as a GitHub **pre-release**. These source pre-releases do not update `main`, because the version is not installable from npm yet.
 - **Idempotency**: source releases use `dsh-src-<version>-<run_id>` tags. The source watcher skips a version already released this way, while the npm watcher ignores pre-releases so the two paths do not trigger each other repeatedly.
+- **Publication propagation**: a freshly published version can show up in the npm packument before its tarball is downloadable, which makes `pnpm add` fail with `ERR_PNPM_FETCH_404`. `release.yml` therefore runs a `preflight` job first — `scripts/wait-for-npm-version.mjs` polls the tarball URL (up to 10 minutes) and only then fans out to the four platform builds.
 - **Patch tolerance**: `scripts/apply-dsh-web-app-patch.mjs` idempotently re-applies the LAN switch to the shipped `dsh-web-app`; if upstream changes the relevant guard, it fails loudly with a message to update the script.
 
 For a manual source build, trigger **Build and Pre-release DeepSeek Harness from Source** and provide the upstream release version, without the `dsh-v` prefix (for example `0.1.2-alpha.1`).

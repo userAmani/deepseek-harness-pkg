@@ -57,18 +57,28 @@ function comparePrerelease(a, b) {
   return 0
 }
 
+// Windows 上 npm 是 npm.cmd；Linux/macOS 上是 npm。注意 .cmd 不能直接 spawn：
+// Node 自 CVE-2024-27980 起对 .cmd/.bat 抛 EINVAL（spawnSync npm.cmd EINVAL），
+// 必须经 shell；这里用单字符串形式避开 DEP0190，pkg/field 都是受控字面量或
+// npm 包名（不含空白与 shell 元字符）。
+function npmView(pkg, field) {
+  const viewArgs = ['view', pkg, field, '--json']
+  if (process.platform === 'win32') {
+    return execFileSync(`npm.cmd ${viewArgs.join(' ')}`, {
+      encoding: 'utf8',
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  }
+  return execFileSync('npm', viewArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+}
+
 function main() {
   const pkgArg = process.argv.find((arg) => arg.startsWith('--package='))
   const pkg = pkgArg ? pkgArg.slice('--package='.length) : '@deepseek-ai/dsh'
-  // Windows 上 npm 是 npm.cmd；Linux/macOS 上是 npm。
-  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   try {
-    const distTags = JSON.parse(
-      execFileSync(npmCmd, ['view', pkg, 'dist-tags', '--json'], { encoding: 'utf8' }),
-    )
-    const versions = JSON.parse(
-      execFileSync(npmCmd, ['view', pkg, 'versions', '--json'], { encoding: 'utf8' }),
-    )
+    const distTags = JSON.parse(npmView(pkg, 'dist-tags'))
+    const versions = JSON.parse(npmView(pkg, 'versions'))
     const candidates = (Array.isArray(versions) ? versions : [versions]).filter(
       (v) => typeof v === 'string',
     )

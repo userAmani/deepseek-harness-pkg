@@ -18,9 +18,37 @@ permissions:
   contents: write
 
 jobs:
+  # npm 发布后 packument（版本列表）先可见，tarball 可能还要过一会儿才能下。
+  # run 35694751348 就是上游 06:23:31Z 发布 0.1.7-alpha.1、sync 06:25:34Z 选中它、
+  # 06:25:55Z `pnpm add` 拿到 tarball 404，四个平台的 build 一起白跑。
+  # 所以在 fan-out 之前先确认 tarball 真能下：拿不到就有界轮询（默认 10 分钟），
+  # 失败也只是一个 job 失败，不占 4 个 runner，且下一个定时 sync 会自然重试。
+  preflight:
+    name: Verify dsh tarball is downloadable
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+
+      - name: Wait for the npm tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/wait-for-npm-version.mjs \
+            --package=@deepseek-ai/dsh \
+            --version="${{ inputs.dsh_version || github.event.inputs.dsh_version }}" \
+            --timeout-seconds=600
+
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    needs: preflight
     # 与 release job 同理：卡住的步骤不该一直占着 runner 直到 6 小时默认上限。
     timeout-minutes: 45
     strategy:

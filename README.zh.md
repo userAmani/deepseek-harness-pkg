@@ -75,6 +75,7 @@ Web UI 会打开在 `http://127.0.0.1:3080`。首次使用需要在界面里配�
 │   ├── prune-node-modules.mjs                    # 打包前瘦身 node_modules 并输出体积报告
 │   ├── resolve-latest-dsh-version.mjs            # 取 npm 所有 dist-tag 中 semver 最高的已发布版本
 │   ├── resolve-latest-github-release-version.mjs # 取上游 GitHub Release 中 semver 最高的版本
+│   ├── wait-for-npm-version.mjs                  # 轮询 npm，等刚发布的版本 tarball 真正可下载
 │   └── zip-footprint.mjs                         # 只读汇总 zip 的体积构成（不解压）
 ├── public/
 │   └── favicon.svg                 # README 图标
@@ -172,6 +173,7 @@ DSH_PKG_ALLOW_LAN=1 dsh web --host 0.0.0.0 --trusted-host <局域网IP>:3080
 - **npm 路径 — `sync-release.yml`**：每 6 小时检查一次，也可手动触发。通过 `scripts/resolve-latest-dsh-version.mjs` 取 npm 所有 dist-tag（`latest`、`next` 等）中 **semver 最高的已发布版本**，然后调用 `release.yml`；npm Release 完成后会同步更新 `main` 和锁文件。
 - **GitHub-only 路径 — `sync-source-release.yml`**：每 6 小时检查上游 GitHub Release 中 semver 最高的版本是否高于 npm `@deepseek-ai/dsh`。如果 GitHub 已发布而 npm 尚未发布，就调用 `release-from-source.yml`：克隆准确的 `dsh-v<version>` tag，执行 `pnpm install` 和 `pnpm run build`，部署构建后的 workspace 闭包，并将四个平台压缩包发布为 GitHub **pre-release**。由于该版本还不能从 npm 安装，源码 pre-release 不会更新 `main`。
 - **幂等性**：源码发布使用 `dsh-src-<version>-<run_id>` tag；源码工作流会跳过已经发布过的版本，npm 工作流会忽略 pre-release，因此两条路径不会反复互相触发。
+- **发布传播**：刚发布的版本可能先进 packument（版本列表），tarball 稍后才可下载，这个窗口里 `pnpm add` 会拿到 `ERR_PNPM_FETCH_404`。因此 `release.yml` 先跑 `preflight` job：`scripts/wait-for-npm-version.mjs` 轮询 tarball（最多 10 分钟），确认可下载后才 fan-out 到四个平台构建。
 - **补丁容错**：`scripts/apply-dsh-web-app-patch.mjs` 会幂等地给产物中的 `dsh-web-app` 重新应用 LAN 开关补丁；如果上游修改了相关 guard，则明确失败并提示更新脚本。
 
 手动进行源码构建时，在 Actions 中触发 **Build and Pre-release DeepSeek Harness from Source**，填写不带 `dsh-v` 前缀的上游版本，例如 `0.1.2-alpha.1`。
