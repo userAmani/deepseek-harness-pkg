@@ -16,12 +16,22 @@
 //      与 channels/stable/latest.json —— 与 CI、与本地构建产物逐字段一致。
 //
 // 用法：
-//   node scripts/assemble-runtime-from-release.mjs \
-//     --packages ~/Downloads/release        \  # 目录或若干 zip 路径
-//     --version 0.1.7-rc.1                  \  # release 页上的 dsh 版本
-//     --harness ../deepseek-harness         \  # 仅用于按 tag 反查 sourceCommit
-//     --minimum-desktop-version 0.6.8       \
-//     --output dist/release-runtime
+//   # 零参数直接跑：取最新 release、自己下载（校验官方 sha256）并组装
+//   node scripts/assemble-runtime-from-release.mjs
+//
+//   # 需要指定版本 / 只取部分平台 / 用本地已下好的包时：
+//   node scripts/assemble-runtime-from-release.mjs --version 0.1.7-rc.1 --platforms macos-arm64
+//   node scripts/assemble-runtime-from-release.mjs --packages ~/Downloads/release
+//
+// 常用参数（都有默认值，通常不用传）：
+//   --version <SemVer|latest>  dsh 版本，默认 latest（自动读出真实版本号）
+//   --download                 下载 release 资产；不给 --packages 时默认开启
+//   --platforms a,b            只处理指定平台，默认全部四个
+//   --platforms a,b            只处理指定平台（默认全部）
+//   --list-releases            列出仓库里可用的发布版本后退出
+//   --download-dir <目录>      下载落盘目录，默认 <output>/packages
+//   --harness ../deepseek-harness
+//   --build-id / --minimum-desktop-version / --node-version / --prefix / --output / --allow-partial
 //
 // 参数与 build-runtime.sh / build-private-harness.yml 对齐，默认值保持一致。
 
@@ -51,6 +61,8 @@ const platforms = {
   },
 }
 
+const releaseApi = 'https://api.github.com/repos/dsh-tauri/deepseek-harness-pkg/releases'
+
 /** 自建运行时会打进包里的插件。缺失时只提示，不阻断（桌面端自带这些插件）。 */
 const bundledPluginCandidates = ['dsh-tauri']
 
@@ -65,7 +77,7 @@ function parseArgs(argv) {
     if (argument === '--') continue
     if (!argument.startsWith('--')) fail(`unexpected argument ${argument}`)
     const name = argument.slice(2)
-    if (name === 'allow-partial') {
+    if (name === 'allow-partial' || name === 'download' || name === 'list-releases') {
       options[name] = true
       continue
     }
@@ -150,6 +162,59 @@ async function commitFromHarnessTags(harnessDir, version) {
   return undefined
 }
 
+function githubArgs(url, token, extra = []) {
+  const args = ['-sS', '-L', '--fail', '-H', 'Accept: application/vnd.github+json', ...extra]
+  if (token) args.push('-H', `Authorization: Bearer ${token}`)
+  return [...args, url]
+}
+
+async function githubJson(url, token) {
+  return JSON.parse(await run('curl', githubArgs(url, token), { capture: true }))
+}
+
+/** tag 形如 `dsh-<版本>-<run_id>`、标题形如 `Release-<版本>`；重跑会有多条，取最新一条。 */
+async function findRelease(version, token) {
+  if (version === 'latest') return githubJson(`${releaseApi}/latest`, token)
+  const releases = await githubJson(`${releaseApi}?per_page=100`, token)
+  const matches = releases.filter(release => (
+    release.name === `Release-${version}`
+    || String(release.tag_name ?? '').startsWith(`dsh-${version}-`)
+  ))
+  if (matches.length === 0) {
+    const known = releases.map(release => String(release.name ?? '').replace(/^Release-/, '')).filter(Boolean)
+    fail(`找不到版本 ${version} 的 release；可用：${known.slice(0, 12).join(', ')}`)
+  }
+  return matches.sort((a, b) => (b.id ?? 0) - (a.id ?? 0))[0]
+}
+
+/** 下载 release 资产：已存在且 sha256 与官方摘要一致时跳过，下载后逐字节复核。 */
+async function downloadAssets(release, directory, { selected, token }) {
+  await mkdir(directory, { recursive: true })
+  const files = []
+  for (const [platform, value] of Object.entries(platforms)) {
+    if (selected !== undefined && !selected.has(platform)) continue
+    const asset = (release.assets ?? []).find(candidate => candidate.name === value.asset)
+    if (asset === undefined) fail(`release ${release.tag_name} 里没有资产 ${value.asset}`)
+    const target = join(directory, value.asset)
+    const expected = String(asset.digest ?? '').replace(/^sha256:/, '')
+    if (expected && await sha256Of(target).catch(() => undefined) === expected) {
+      console.log(`  已存在且校验通过：${value.asset}`)
+      files.push(target)
+      continue
+    }
+    console.log(`  下载 ${value.asset}（${(asset.size / 1048576).toFixed(1)} MiB）`)
+    await run('curl', githubArgs(asset.browser_download_url, token, [
+      '--progress-bar', '-C', '-', '-o', target, '--retry', '3', '--retry-delay', '2',
+    ]))
+    const actual = await sha256Of(target)
+    if (expected && actual !== expected) {
+      fail(`${value.asset} 校验失败：官方 ${expected}，实际 ${actual}（删掉该文件后重试）`)
+    }
+    files.push(target)
+  }
+  return files
+}
+
 async function sha256Of(path) {
   const buffer = await readFile(path)
   return createHash('sha256').update(buffer).digest('hex')
@@ -178,9 +243,29 @@ function run(command, args, { capture = false, cwd } = {}) {
   })
 }
 
+function parsePlatformFilter(value) {
+  if (value === undefined) return undefined
+  const selected = new Set(value.split(',').map(name => name.trim()).filter(Boolean))
+  for (const platform of selected) {
+    if (!(platform in platforms)) fail(`unknown platform ${platform}；可选 ${Object.keys(platforms).join(', ')}`)
+  }
+  return selected
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const version = required(options, 'version')
+  const token = options.token?.trim() || process.env.GITHUB_TOKEN?.trim() || undefined
+
+  if (options['list-releases']) {
+    const releases = await githubJson(`${releaseApi}?per_page=100`, token)
+    for (const release of releases.slice(0, 20)) {
+      const name = String(release.name ?? '').replace(/^Release-/, '') || '(未命名)'
+      console.log(`  ${name.padEnd(18)} tag=${release.tag_name}  资产=${(release.assets ?? []).length}`)
+    }
+    return
+  }
+
+  let version = options.version?.trim() || 'latest'
   // 默认写到独立目录：build-runtime.sh 的 dist/private-runtime 里可能残留别的版本
 // 产物，混在一起会让 generate-local-release.mjs 的版本校验直接失败。
   const output = resolve(options.output ?? 'dist/release-runtime')
@@ -190,7 +275,24 @@ async function main() {
   const prefix = normalizePrefix(options.prefix ?? '/harness')
   const harnessDir = resolve(options.harness ?? '../deepseek-harness')
   const explicitCommit = options['source-commit']?.trim()
-  const candidates = await collectCandidates(options.packages)
+  const selectedPlatforms = parsePlatformFilter(options.platforms)
+  let candidates
+  const download = options.download || options.packages.length === 0
+  if (download) {
+    if (options.packages.length > 0) fail('--download 与 --packages 不能同时用')
+    const release = await findRelease(version, token)
+    if (version === 'latest') {
+      version = String(release.name ?? '').replace(/^Release-/, '')
+      if (!version) fail(`无法从 release ${release.tag_name} 推断版本，请显式传 --version`)
+    }
+    console.log(`发布 ${release.name}（tag ${release.tag_name}）`)
+    candidates = await downloadAssets(release, resolve(options['download-dir'] ?? join(output, 'packages')), {
+      selected: selectedPlatforms,
+      token,
+    })
+  } else {
+    candidates = await collectCandidates(options.packages.length > 0 ? options.packages : [output])
+  }
 
   const artifacts = join(output, 'artifacts')
   await mkdir(artifacts, { recursive: true })
@@ -198,6 +300,7 @@ async function main() {
   const selected = new Map()
   for (const file of candidates) {
     const [platform] = matchPlatform(file)
+    if (selectedPlatforms !== undefined && !selectedPlatforms.has(platform)) continue
     if (selected.has(platform)) fail(`duplicate release asset for ${platform}`)
     selected.set(platform, file)
   }
