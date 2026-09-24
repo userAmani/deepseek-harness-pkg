@@ -12,7 +12,7 @@
     "build": "pnpm deploy --filter . --prod build_dir --legacy",
     "build:private-harness": "node scripts/build-local-harness-runtime.mjs",
     "release:private-harness": "node scripts/generate-local-release.mjs",
-    "test:private-harness": "node --test scripts/generate-local-release.spec.mjs"
+    "test:private-harness": "node --test \"scripts/*.spec.mjs\""
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.1.7-alpha.2",
