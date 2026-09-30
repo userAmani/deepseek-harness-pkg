@@ -16,18 +16,23 @@
 //      与 channels/stable/latest.json —— 与 CI、与本地构建产物逐字段一致。
 //
 // 用法：
-//   # 零参数直接跑：取最新 release、自己下载（校验官方 sha256）并组装
+//   # 零参数直接跑：取最新发布、自己下载（校验官方 sha256）并组装
 //   node scripts/assemble-runtime-from-release.mjs
 //
-//   # 需要指定版本 / 只取部分平台 / 用本地已下好的包时：
+//   # 需要指定版本 / 只取部分平台 / 用本地已下好的包 / 换代理时：
 //   node scripts/assemble-runtime-from-release.mjs --version 0.1.7-rc.1 --platforms macos-arm64
 //   node scripts/assemble-runtime-from-release.mjs --packages ~/Downloads/release
+//   node scripts/assemble-runtime-from-release.mjs --proxy 127.0.0.1:7891
+//
+// 下载默认走本机 127.0.0.1:7890 代理（国内直连 GitHub release 很慢）；该端口不可达时自动直连。
 //
 // 常用参数（都有默认值，通常不用传）：
-//   --version <SemVer|latest>  dsh 版本，默认 latest（自动读出真实版本号）
+//   --version <SemVer|latest>  dsh 版本，默认 latest（取 semver 最高的已发布版本）
 //   --download                 下载 release 资产；不给 --packages 时默认开启
-//   --platforms a,b            只处理指定平台，默认全部四个
 //   --platforms a,b            只处理指定平台（默认全部）
+//   --proxy <url>              覆盖默认代理；只写 host:port 会自动补 http://。
+//                              默认已内置 127.0.0.1:7890（不可达时自动直连）；
+//                              想强制直连用 --no-proxy，也可用 ASSEMBLE_RUNTIME_PROXY / HTTPS_PROXY / ALL_PROXY 覆盖
 //   --list-releases            列出仓库里可用的发布版本后退出
 //   --download-dir <目录>      下载落盘目录，默认 <output>/packages
 //   --harness ../deepseek-harness
@@ -35,11 +40,14 @@
 //
 // 参数与 build-runtime.sh / build-private-harness.yml 对齐，默认值保持一致。
 
-import { createHash } from 'node:crypto'
-import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve } from 'node:path'
+import { connect } from 'node:net'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
+import { compareSemver, maxSemver } from './resolve-latest-dsh-version.mjs'
 
 /** 平台 → release 资产名 / 运行时包名。资产名与 release.yml 的 matrix 一致。 */
 const platforms = {
@@ -77,7 +85,7 @@ function parseArgs(argv) {
     if (argument === '--') continue
     if (!argument.startsWith('--')) fail(`unexpected argument ${argument}`)
     const name = argument.slice(2)
-    if (name === 'allow-partial' || name === 'download' || name === 'list-releases') {
+    if (name === 'allow-partial' || name === 'download' || name === 'list-releases' || name === 'no-proxy') {
       options[name] = true
       continue
     }
@@ -162,20 +170,98 @@ async function commitFromHarnessTags(harnessDir, version) {
   return undefined
 }
 
-function githubArgs(url, token, extra = []) {
+function githubArgs(url, token, extra = [], proxy) {
   const args = ['-sS', '-L', '--fail', '-H', 'Accept: application/vnd.github+json', ...extra]
   if (token) args.push('-H', `Authorization: Bearer ${token}`)
+  // 显式代理优先；不给时 curl 自己会读 https_proxy / all_proxy 等环境变量。
+  if (proxy) args.push('--proxy', proxy)
   return [...args, url]
 }
 
-async function githubJson(url, token) {
-  return JSON.parse(await run('curl', githubArgs(url, token), { capture: true }))
+async function githubJson(url, token, proxy) {
+  return JSON.parse(await run('curl', githubArgs(url, token, [], proxy), { capture: true }))
+}
+
+/**
+ * 代理地址归一化：允许只写 `127.0.0.1:7890`（补成 `http://127.0.0.1:7890`）。
+ * curl 收到缺 scheme 的 `--proxy` 值会直接报错，补全比让用户猜格式友好。
+ */
+export function normalizeProxy(value) {
+  const trimmed = String(value ?? '').trim()
+  if (!trimmed) return undefined
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+}
+
+/**
+ * 默认下载代理：国内直连 GitHub release 资产很慢，统一走本机常用端口。
+ * 想直连用 `--no-proxy`；想换端口/地址用 `--proxy <url>` 或 ASSEMBLE_RUNTIME_PROXY。
+ */
+const DEFAULT_PROXY = '127.0.0.1:7890'
+
+/** 极简 TCP 可达性探测：只用来判断"默认代理到底开没开"，不参与显式指定的代理。 */
+export async function isProxyReachable(proxy, { timeoutMs = 400 } = {}) {
+  let url
+  try {
+    url = new URL(proxy)
+  } catch {
+    return false
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return true // socks 之类不探，交给 curl 报错
+  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80))
+  return await new Promise(resolve => {
+    const socket = connect({ host: url.hostname, port })
+    const settle = reachable => {
+      socket.destroy()
+      resolve(reachable)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => settle(true))
+    socket.once('timeout', () => settle(false))
+    socket.once('error', () => settle(false))
+  })
+}
+
+/**
+ * 代理取值顺序：`--proxy` → `--no-proxy` → 环境变量 → 默认本机代理。
+ * 默认值只在探测到真的可达时才用：代理没开时直连，不至于因为没开代理就下载失败。
+ */
+export async function resolveProxy(options, env = process.env, probe = isProxyReachable) {
+  const explicit = normalizeProxy(options.proxy)
+  if (explicit) return explicit
+  if (options['no-proxy']) return undefined
+  for (const candidate of [env.ASSEMBLE_RUNTIME_PROXY, env.HTTPS_PROXY, env.https_proxy, env.ALL_PROXY, env.all_proxy]) {
+    const proxy = normalizeProxy(candidate)
+    if (proxy) return proxy
+  }
+  const fallback = normalizeProxy(DEFAULT_PROXY)
+  if (await probe(fallback)) return fallback
+  console.log(`默认代理 ${fallback} 不可达，本次直连（需要代理时用 --proxy <url> 指定）`)
+  return undefined
+}
+
+/** 从 release 推断版本号：标题 `Release-<版本>` 优先，退回 tag `dsh-<版本>-<run_id>`。 */
+export function versionOf(release) {
+  const fromName = String(release?.name ?? '').replace(/^Release-/, '')
+  const fromTag = String(release?.tag_name ?? '').replace(/^dsh-/, '').replace(/-\d+$/, '')
+  return [fromName, fromTag].find(value => /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)) ?? ''
+}
+
+/**
+ * 取「最新发布」——不看 GitHub 的 `latest` 标记：那个标记由维护者显式指定，可能仍停在旧
+ * 线上（实测 0.2.0-rc.1 已发布并挂齐 4 个平台资产，`/releases/latest` 却还指向 0.1.7-rc.2）。
+ * 与 `resolve-latest-dsh-version.mjs` 同一策略：对所有已发布版本取 semver 最高。
+ */
+export function pickLatestRelease(releases) {
+  const usable = (releases ?? []).filter(release => !release?.draft && versionOf(release))
+  if (usable.length === 0) fail('仓库里没有可用的 release（全是草稿或版本号不可解析）')
+  const winner = maxSemver(usable.map(versionOf))
+  return usable.find(release => versionOf(release) === winner)
 }
 
 /** tag 形如 `dsh-<版本>-<run_id>`、标题形如 `Release-<版本>`；重跑会有多条，取最新一条。 */
-async function findRelease(version, token) {
-  if (version === 'latest') return githubJson(`${releaseApi}/latest`, token)
-  const releases = await githubJson(`${releaseApi}?per_page=100`, token)
+async function findRelease(version, token, proxy) {
+  const releases = await githubJson(`${releaseApi}?per_page=100`, token, proxy)
+  if (version === 'latest') return pickLatestRelease(releases)
   const matches = releases.filter(release => (
     release.name === `Release-${version}`
     || String(release.tag_name ?? '').startsWith(`dsh-${version}-`)
@@ -188,7 +274,7 @@ async function findRelease(version, token) {
 }
 
 /** 下载 release 资产：已存在且 sha256 与官方摘要一致时跳过，下载后逐字节复核。 */
-async function downloadAssets(release, directory, { selected, token }) {
+async function downloadAssets(release, directory, { selected, token, proxy }) {
   await mkdir(directory, { recursive: true })
   const files = []
   for (const [platform, value] of Object.entries(platforms)) {
@@ -202,13 +288,20 @@ async function downloadAssets(release, directory, { selected, token }) {
       files.push(target)
       continue
     }
+    const partial = `${target}.${randomUUID()}.part`
     console.log(`  下载 ${value.asset}（${(asset.size / 1048576).toFixed(1)} MiB）`)
-    await run('curl', githubArgs(asset.browser_download_url, token, [
-      '--progress-bar', '-C', '-', '-o', target, '--retry', '3', '--retry-delay', '2',
-    ]))
-    const actual = await sha256Of(target)
-    if (expected && actual !== expected) {
-      fail(`${value.asset} 校验失败：官方 ${expected}，实际 ${actual}（删掉该文件后重试）`)
+    try {
+      await run('curl', githubArgs(asset.browser_download_url, token, [
+        '--progress-bar', '-C', '-', '-o', partial, '--retry', '3', '--retry-delay', '2',
+      ], proxy))
+      const actual = await sha256Of(partial)
+      if (expected && actual !== expected) {
+        fail(`${value.asset} 校验失败：官方 ${expected}，实际 ${actual}（请重试）`)
+      }
+      await rm(target, { force: true })
+      await rename(partial, target)
+    } finally {
+      await rm(partial, { force: true })
     }
     files.push(target)
   }
@@ -255,11 +348,20 @@ function parsePlatformFilter(value) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const token = options.token?.trim() || process.env.GITHUB_TOKEN?.trim() || undefined
+  // 走代理能显著加快 GitHub release 资产下载（国内直连常只有几十 KB/s）；默认已内置本机代理。
+  const proxy = await resolveProxy(options)
 
   if (options['list-releases']) {
-    const releases = await githubJson(`${releaseApi}?per_page=100`, token)
-    for (const release of releases.slice(0, 20)) {
-      const name = String(release.name ?? '').replace(/^Release-/, '') || '(未命名)'
+    const releases = await githubJson(`${releaseApi}?per_page=100`, token, proxy)
+    // 按版本号倒序：API 自身的顺序不代表新旧，这里与「取最新」同一口径。
+    const ordered = [...releases].sort((a, b) => {
+      const [left, right] = [versionOf(a), versionOf(b)]
+      if (!left) return 1
+      if (!right) return -1
+      return compareSemver(right, left)
+    })
+    for (const release of ordered.slice(0, 20)) {
+      const name = versionOf(release) || '(未命名)'
       console.log(`  ${name.padEnd(18)} tag=${release.tag_name}  资产=${(release.assets ?? []).length}`)
     }
     return
@@ -280,15 +382,17 @@ async function main() {
   const download = options.download || options.packages.length === 0
   if (download) {
     if (options.packages.length > 0) fail('--download 与 --packages 不能同时用')
-    const release = await findRelease(version, token)
+    if (proxy) console.log(`下载代理：${proxy}`)
+    const release = await findRelease(version, token, proxy)
     if (version === 'latest') {
-      version = String(release.name ?? '').replace(/^Release-/, '')
+      version = versionOf(release)
       if (!version) fail(`无法从 release ${release.tag_name} 推断版本，请显式传 --version`)
     }
     console.log(`发布 ${release.name}（tag ${release.tag_name}）`)
     candidates = await downloadAssets(release, resolve(options['download-dir'] ?? join(output, 'packages')), {
       selected: selectedPlatforms,
       token,
+      proxy,
     })
   } else {
     candidates = await collectCandidates(options.packages.length > 0 ? options.packages : [output])
@@ -378,4 +482,7 @@ async function main() {
   console.log('把该目录内容按相同路径上传即可（清单走 web 域名、安装包走 CDN 域名）。')
 }
 
-await main()
+// 直接执行时跑 main；被 spec 导入时只取纯函数（versionOf / pickLatestRelease），不触发下载。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main()
+}
