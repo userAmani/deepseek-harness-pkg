@@ -40,6 +40,22 @@ function required(options, name) {
   return value
 }
 
+/**
+ * 清单里的发布日期：显式 `--release-date YYYY-MM-DD` 优先，否则从 buildId（`YYYYMMDD.HHMM`）
+ * 推导。桌面端「关于」对话框优先读业务清单的这个字段，缺了就只能回退上游 GitHub。
+ */
+function releaseDateOf(source) {
+  const raw = String(source ?? '').trim()
+  const match = /^(\d{4})(\d{2})(\d{2})(?:\.|$)/.exec(raw)
+  const date = match
+    ? `${match[1]}-${match[2]}-${match[3]}`
+    : raw
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    fail(`--release-date must be YYYY-MM-DD or a buildId starting with YYYYMMDD: ${raw}`)
+  }
+  return date
+}
+
 function normalizePrefix(value) {
   const segments = value.split('/').filter(Boolean)
   if (segments.length === 0 || segments.some(segment => segment === '.' || segment === '..')) {
@@ -54,6 +70,7 @@ async function main() {
   const output = resolve(options.output ?? 'dist/local-runtime/upload')
   const version = required(options, 'version')
   const buildId = required(options, 'build-id')
+  const releaseDate = releaseDateOf(options['release-date'] ?? buildId)
   const minimumDesktopVersion = required(options, 'minimum-desktop-version')
   const prefix = normalizePrefix(options.prefix ?? '/harness')
   if (!/^[0-9A-Za-z._]+$/.test(buildId)) fail('--build-id may contain letters, digits, dot and underscore')
@@ -97,6 +114,7 @@ async function main() {
     schemaVersion: 1,
     version,
     buildId,
+    releaseDate,
     sourceCommit: [...sourceCommits][0],
     sourceDirty: metadata.some(value => value.sourceDirty),
     nodeVersion: [...nodeVersions][0],
