@@ -289,11 +289,6 @@ async function main() {
       },
     },
   }, null, 2)}\n`)
-  await run(process.execPath, [
-    join(packageRoot, 'scripts', 'apply-dsh-web-app-patch.mjs'),
-    `--file=${join(staging, 'node_modules', '@deepseek-ai', 'dsh-web-app', 'lib', 'startup.js')}`,
-  ], packageRoot)
-
   const entry = join(staging, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
   if (!existsSync(entry)) fail(`runtime entry is missing: ${entry}`)
   await run(process.execPath, [entry, '--version'], staging)
