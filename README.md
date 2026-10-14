@@ -99,10 +99,49 @@ This builds only the current platform. Use **Build private Harness runtimes** fo
 The final manifest URL must be:
 
 ```text
-https://toutiao.cdn.shuiwujia.com/harness/channels/stable/latest.json
+https://web.shuiwujia.com/harness/channels/stable/latest.json
 ```
 
-Upload `releases/` first and replace `channels/stable/latest.json` last.
+### Assemble existing GitHub Release packages
+
+Run from this repository; no Harness compilation is required:
+
+```sh
+node scripts/assemble-runtime-from-release.mjs
+```
+
+The default source is `userAmani/deepseek-harness-pkg`. The script selects the highest published stable version (final or `rc`), downloads all four platforms, verifies available GitHub SHA-256 digests and the actual engine version, and generates `dist/release-runtime/upload/harness/`. Alpha, beta and other previews never replace the stable channel, even when GitHub marks their releases as non-prerelease.
+
+To add the latest preview for manual selection in the desktop core manager:
+
+```sh
+node scripts/assemble-runtime-from-release.mjs --channel preview
+```
+
+Use `--version 0.2.1-alpha.2` for a specific preview or `--repository owner/repo` for another release source. Existing `releases/` directories are preserved; both channel pointers and the complete release catalog are regenerated from their manifests, so assembling an older release does not downgrade a channel.
+
+```text
+harness/
+  channels/
+    stable/latest.json
+    preview/latest.json
+  releases/
+    index.json
+    0.2.0-rc.2/<buildId>/manifest.json
+    0.2.0-rc.2/<buildId>/deepseek-harness-runtime-<platform>.zip
+    0.2.1-alpha.2/<buildId>/manifest.json
+    0.2.1-alpha.2/<buildId>/deepseek-harness-runtime-<platform>.zip
+```
+
+`releases/index.json` has `schemaVersion: 1` and a `releases` array containing the complete manifests for every build, ordered by SemVer and build ID descending. The desktop uses this catalog to select the latest compatible final/RC runtime for first installation and update notifications; the core manager also exposes preview versions for manual download and activation. Compatibility checks include desktop minimum version, bundled Node version, engine minimum version and platform assets. They do not guarantee compatibility with every third-party plugin. A preview-only upload has no stable pointer until a final/RC release is added.
+
+To repair an existing upload tree without downloading or rebuilding packages:
+
+```sh
+node scripts/assemble-runtime-from-release.mjs --reindex
+```
+
+Upload new `releases/<version>/<buildId>/` directories first, then the generated `channels/` manifests, and replace `releases/index.json` last. Keep the directory structure and previously published versions on the server. JSON manifests use `https://web.shuiwujia.com/harness/`; archives use `https://toutiao.cdn.shuiwujia.com/harness/`. These commands prepare local files and do not upload them to the server.
 
 ### Legacy upstream release (not used by the enterprise flow)
 

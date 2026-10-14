@@ -13,7 +13,6 @@
 //      （platform / filename / version / sha256 / sourceCommit / sourceDirty /
 //        nodeVersion / bundledPlugins）；
 //   3. 复用 scripts/generate-local-release.mjs 生成 releases/<版本>/<buildId>/
-//      与 channels/stable/latest.json —— 与 CI、与本地构建产物逐字段一致。
 //
 // 用法：
 //   # 零参数直接跑：取最新发布、自己下载（校验官方 sha256）并组装
@@ -27,7 +26,6 @@
 // 下载默认走本机 127.0.0.1:7890 代理（国内直连 GitHub release 很慢）；该端口不可达时自动直连。
 //
 // 常用参数（都有默认值，通常不用传）：
-//   --version <SemVer|latest>  dsh 版本，默认 latest（取 semver 最高的已发布版本）
 //   --download                 下载 release 资产；不给 --packages 时默认开启
 //   --platforms a,b            只处理指定平台（默认全部）
 //   --proxy <url>              覆盖默认代理；只写 host:port 会自动补 http://。
@@ -47,7 +45,7 @@ import { connect } from 'node:net'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
-import { compareSemver, maxSemver } from './resolve-latest-dsh-version.mjs'
+import { compareSemver, maxSemver, runtimeChannel } from './resolve-latest-dsh-version.mjs'
 
 /** 平台 → release 资产名 / 运行时包名。资产名与 release.yml 的 matrix 一致。 */
 const platforms = {
@@ -69,7 +67,7 @@ const platforms = {
   },
 }
 
-const releaseApi = 'https://api.github.com/repos/dsh-tauri/deepseek-harness-pkg/releases'
+const defaultRepository = 'userAmani/deepseek-harness-pkg'
 
 /** 自建运行时会打进包里的插件。缺失时只提示，不阻断（桌面端自带这些插件）。 */
 const bundledPluginCandidates = ['dsh-tauri']
@@ -85,7 +83,7 @@ function parseArgs(argv) {
     if (argument === '--') continue
     if (!argument.startsWith('--')) fail(`unexpected argument ${argument}`)
     const name = argument.slice(2)
-    if (name === 'allow-partial' || name === 'download' || name === 'list-releases' || name === 'no-proxy') {
+    if (name === 'allow-partial' || name === 'download' || name === 'list-releases' || name === 'no-proxy' || name === 'reindex') {
       options[name] = true
       continue
     }
@@ -249,23 +247,32 @@ export function versionOf(release) {
 /**
  * 取「最新发布」——不看 GitHub 的 `latest` 标记：那个标记由维护者显式指定，可能仍停在旧
  * 线上（实测 0.2.0-rc.1 已发布并挂齐 4 个平台资产，`/releases/latest` 却还指向 0.1.7-rc.2）。
- * 与 `resolve-latest-dsh-version.mjs` 同一策略：对所有已发布版本取 semver 最高。
  */
-export function pickLatestRelease(releases) {
-  const usable = (releases ?? []).filter(release => !release?.draft && versionOf(release))
-  if (usable.length === 0) fail('仓库里没有可用的 release（全是草稿或版本号不可解析）')
+export function pickLatestRelease(releases, channel = 'stable') {
+  if (!['stable', 'preview'].includes(channel)) fail(`unknown channel ${channel}`)
+  const usable = (releases ?? []).filter(release => !release?.draft
+    && versionOf(release) && runtimeChannel(versionOf(release)) === channel)
+  if (usable.length === 0) fail(`no published ${channel} release is available`)
   const winner = maxSemver(usable.map(versionOf))
-  return usable.find(release => versionOf(release) === winner)
+  return usable.filter(release => versionOf(release) === winner)
+    .sort((left, right) => (right.id ?? 0) - (left.id ?? 0))[0]
+}
+
+async function fetchReleases(releaseApi, token, proxy) {
+  const releases = []
+  for (let page = 1; ; page += 1) {
+    const batch = await githubJson(`${releaseApi}?per_page=100&page=${page}`, token, proxy)
+    if (!Array.isArray(batch)) fail('GitHub releases response must be an array')
+    releases.push(...batch)
+    if (batch.length < 100) return releases
+  }
 }
 
 /** tag 形如 `dsh-<版本>-<run_id>`、标题形如 `Release-<版本>`；重跑会有多条，取最新一条。 */
-async function findRelease(version, token, proxy) {
-  const releases = await githubJson(`${releaseApi}?per_page=100`, token, proxy)
-  if (version === 'latest') return pickLatestRelease(releases)
-  const matches = releases.filter(release => (
-    release.name === `Release-${version}`
-    || String(release.tag_name ?? '').startsWith(`dsh-${version}-`)
-  ))
+async function findRelease(releaseApi, version, channel, token, proxy) {
+  const releases = await fetchReleases(releaseApi, token, proxy)
+  if (version === 'latest') return pickLatestRelease(releases, channel)
+  const matches = releases.filter(release => !release.draft && versionOf(release) === version)
   if (matches.length === 0) {
     const known = releases.map(release => String(release.name ?? '').replace(/^Release-/, '')).filter(Boolean)
     fail(`找不到版本 ${version} 的 release；可用：${known.slice(0, 12).join(', ')}`)
@@ -347,12 +354,25 @@ function parsePlatformFilter(value) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
+  const output = resolve(options.output ?? 'dist/release-runtime')
+  if (options.reindex) {
+    await run(process.execPath, [
+      join(import.meta.dirname, 'generate-local-release.mjs'),
+      '--output', join(output, 'upload'), '--reindex',
+    ])
+    return
+  }
+  const channel = options.channel?.trim() || 'stable'
+  if (!['stable', 'preview'].includes(channel)) fail(`unknown channel ${channel}`)
+  const repository = options.repository?.trim() || defaultRepository
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) fail('invalid --repository')
+  const releaseApi = `https://api.github.com/repos/${repository}/releases`
   const token = options.token?.trim() || process.env.GITHUB_TOKEN?.trim() || undefined
   // 走代理能显著加快 GitHub release 资产下载（国内直连常只有几十 KB/s）；默认已内置本机代理。
   const proxy = await resolveProxy(options)
 
   if (options['list-releases']) {
-    const releases = await githubJson(`${releaseApi}?per_page=100`, token, proxy)
+    const releases = await fetchReleases(releaseApi, token, proxy)
     // 按版本号倒序：API 自身的顺序不代表新旧，这里与「取最新」同一口径。
     const ordered = [...releases].sort((a, b) => {
       const [left, right] = [versionOf(a), versionOf(b)]
@@ -370,7 +390,6 @@ async function main() {
   let version = options.version?.trim() || 'latest'
   // 默认写到独立目录：build-runtime.sh 的 dist/private-runtime 里可能残留别的版本
 // 产物，混在一起会让 generate-local-release.mjs 的版本校验直接失败。
-  const output = resolve(options.output ?? 'dist/release-runtime')
   const buildId = options['build-id']?.trim() || defaultBuildId()
   const minimumDesktopVersion = options['minimum-desktop-version']?.trim() ?? '0.6.8'
   const nodeVersion = options['node-version']?.trim() ?? '22.22.0'
@@ -383,7 +402,7 @@ async function main() {
   if (download) {
     if (options.packages.length > 0) fail('--download 与 --packages 不能同时用')
     if (proxy) console.log(`下载代理：${proxy}`)
-    const release = await findRelease(version, token, proxy)
+    const release = await findRelease(releaseApi, version, channel, token, proxy)
     if (version === 'latest') {
       version = versionOf(release)
       if (!version) fail(`无法从 release ${release.tag_name} 推断版本，请显式传 --version`)
@@ -400,6 +419,10 @@ async function main() {
 
   const artifacts = join(output, 'artifacts')
   await mkdir(artifacts, { recursive: true })
+  for (const { archive } of Object.values(platforms)) {
+    await rm(join(artifacts, archive), { force: true })
+    await rm(join(artifacts, `${archive}.json`), { force: true })
+  }
 
   const selected = new Map()
   for (const file of candidates) {
@@ -419,9 +442,12 @@ async function main() {
   for (const [platform, source] of selected) {
     const { archive } = platforms[platform]
     const target = join(artifacts, archive)
-    await copyFile(source, target)
-
     const cliManifest = await readJsonInside(source, 'node_modules/@deepseek-ai/dsh/package.json')
+    if (!cliManifest?.version) fail(`missing dsh version in ${basename(source)}`)
+    if (version === 'latest') version = cliManifest.version
+    if (cliManifest.version !== version) fail(`${basename(source)} contains dsh ${cliManifest.version}, expected ${version}`)
+    if (options.channel && runtimeChannel(version) !== channel) fail(`${version} does not belong to ${channel}`)
+    await copyFile(source, target)
     const sourceCommit = explicitCommit
       ?? cliManifest?.gitHead
       ?? await commitFromHarnessTags(harnessDir, version)
@@ -477,7 +503,8 @@ async function main() {
 
   const payload = join(output, 'upload', 'harness')
   console.log(`\n上传目录: ${payload}`)
-  console.log(`  清单 : ${prefix}/channels/stable/latest.json`)
+  console.log(`  清单 : ${prefix}/channels/${runtimeChannel(version)}/latest.json`)
+  console.log(`  索引 : ${prefix}/releases/index.json`)
   console.log(`  资产 : ${prefix}/releases/${version}/${buildId}/`)
   console.log('把该目录内容按相同路径上传即可（清单走 web 域名、安装包走 CDN 域名）。')
 }

@@ -13,13 +13,13 @@ const run = promisify(execFile)
 const script = resolve(import.meta.dirname, 'assemble-runtime-from-release.mjs')
 
 /** 造一个假的 release 资产：内容只要够读出 dsh 版本、gitHead 与内置插件即可。 */
-async function fakeAsset(directory, assetName, { pluginVersion = '0.6.7' } = {}) {
+async function fakeAsset(directory, assetName, { pluginVersion = '0.6.7', version = '0.1.7-rc.1' } = {}) {
   const staging = await mkdtemp(join(directory, 'staging-'))
   await mkdir(join(staging, 'node_modules/@deepseek-ai/dsh'), { recursive: true })
   await mkdir(join(staging, 'node_modules/dsh-tauri'), { recursive: true })
   await writeFile(
     join(staging, 'node_modules/@deepseek-ai/dsh/package.json'),
-    JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.7-rc.1', gitHead: '9d55f38abcdef' }),
+    JSON.stringify({ name: '@deepseek-ai/dsh', version, gitHead: '9d55f38abcdef' }),
   )
   await writeFile(
     join(staging, 'node_modules/dsh-tauri/package.json'),
@@ -105,6 +105,46 @@ test('refuses a partial platform set unless --allow-partial is passed', async ()
   }
 })
 
+test('infers a local alpha archive version and preserves an existing RC channel', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'assemble-runtime-alpha-'))
+  try {
+    const stableDir = join(root, 'stable')
+    const previewDir = join(root, 'preview')
+    const output = join(root, 'out')
+    await mkdir(stableDir)
+    await mkdir(previewDir)
+    await fakeAsset(stableDir, 'deepseek-harness-pkg-macos-arm64.zip', { version: '0.2.0-rc.2' })
+    await fakeAsset(stableDir, 'deepseek-harness-pkg-linux.zip', { version: '0.2.0-rc.2' })
+    await fakeAsset(previewDir, 'deepseek-harness-pkg-macos-arm64.zip', { version: '0.2.1-alpha.2' })
+    const args = ['--output', output, '--allow-partial', '--no-proxy']
+    await run(process.execPath, [script, '--packages', stableDir, ...args], { timeout: 10_000 })
+    await run(process.execPath, [script, '--packages', previewDir, ...args], { timeout: 10_000 })
+    const harness = join(output, 'upload/harness')
+    const stable = JSON.parse(await readFile(join(harness, 'channels/stable/latest.json'), 'utf8'))
+    const preview = JSON.parse(await readFile(join(harness, 'channels/preview/latest.json'), 'utf8'))
+    assert.equal(stable.version, '0.2.0-rc.2')
+    assert.equal(preview.version, '0.2.1-alpha.2')
+    assert.deepEqual(Object.keys(preview.assets), ['macos-arm64'])
+    const catalog = JSON.parse(await readFile(join(harness, 'releases/index.json'), 'utf8'))
+    assert.deepEqual(catalog.releases.map(release => release.version), ['0.2.1-alpha.2', '0.2.0-rc.2'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('rejects an archive whose engine version differs from the requested RC', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'assemble-runtime-mislabeled-'))
+  try {
+    await fakeAsset(root, 'deepseek-harness-pkg-macos-arm64.zip', { version: '0.2.1-alpha.2' })
+    await assert.rejects(run(process.execPath, [script,
+      '--packages', root, '--version', '0.2.0-rc.2', '--allow-partial',
+      '--output', join(root, 'out'), '--no-proxy',
+    ], { timeout: 10_000 }), /contains dsh 0\.2\.1-alpha\.2, expected 0\.2\.0-rc\.2/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('replaces an oversized stale release asset instead of resuming it', { skip: process.platform === 'win32' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'assemble-runtime-stale-'))
   try {
@@ -171,7 +211,7 @@ test('forwards --proxy to curl for both the API call and the asset download', { 
   const root = await mkdtemp(join(tmpdir(), 'assemble-runtime-proxy-'))
   try {
     const assetName = 'deepseek-harness-pkg-windows.zip'
-    const source = await fakeAsset(root, assetName)
+    const source = await fakeAsset(root, assetName, { version: '0.2.0-rc.1' })
     const argvLog = join(root, 'curl-argv.log')
 
     const bin = join(root, 'bin')

@@ -31,6 +31,14 @@ export function maxSemver(versions) {
   return versions.reduce((max, v) => (compareSemver(v, max) > 0 ? v : max))
 }
 
+export function runtimeChannel(version) {
+  const match = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(version)
+  if (!match) throw new Error(`RUNTIME_VERSION_INVALID: ${version}`)
+  const identifiers = match[1]?.split('.')
+  return !identifiers || (identifiers[0] === 'rc' && identifiers.slice(1).every(identifier => /^\d+$/.test(identifier)))
+    ? 'stable' : 'preview'
+}
+
 function parse(v) {
   const [release, prerelease = ''] = v.replace(/^v/i, '').split('-')
   const [major, minor, patch] = release.split('.').map((n) => Number(n))

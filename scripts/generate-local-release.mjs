@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import process from 'node:process'
+import { compareSemver, runtimeChannel } from './resolve-latest-dsh-version.mjs'
 
 const platformFiles = {
   'windows-x64': 'deepseek-harness-runtime-windows-x64.zip',
@@ -22,7 +23,7 @@ function parseArgs(argv) {
     if (argument === '--') continue
     if (!argument.startsWith('--')) fail(`unexpected argument ${argument}`)
     const name = argument.slice(2)
-    if (name === 'allow-partial') {
+    if (name === 'allow-partial' || name === 'reindex') {
       options[name] = true
       continue
     }
@@ -64,11 +65,58 @@ function normalizePrefix(value) {
   return `/${segments.join('/')}`
 }
 
+async function generateCatalog(output) {
+  const harness = join(output, 'harness')
+  const releasesDir = join(harness, 'releases')
+  const releases = []
+  for (const versionDir of await readdir(releasesDir, { withFileTypes: true })) {
+    if (!versionDir.isDirectory()) continue
+    for (const buildDir of await readdir(join(releasesDir, versionDir.name), { withFileTypes: true })) {
+      if (!buildDir.isDirectory()) continue
+      const manifestPath = join(releasesDir, versionDir.name, buildDir.name, 'manifest.json')
+      let body
+      try {
+        body = await readFile(manifestPath, 'utf8')
+      } catch (error) {
+        if (error.code === 'ENOENT') continue
+        throw error
+      }
+      const manifest = JSON.parse(body)
+      if (manifest.schemaVersion !== 1 || manifest.version !== versionDir.name || manifest.buildId !== buildDir.name) {
+        fail(`release manifest does not match its directory: ${manifestPath}`)
+      }
+      runtimeChannel(manifest.version)
+      releases.push(manifest)
+    }
+  }
+  if (releases.length === 0) fail(`no release manifests found in ${releasesDir}`)
+  releases.sort((left, right) => compareSemver(right.version, left.version)
+    || (left.buildId < right.buildId ? 1 : left.buildId > right.buildId ? -1 : 0))
+  const json = value => `${JSON.stringify(value, null, 2)}\n`
+  await writeFile(join(releasesDir, 'index.json'), json({ schemaVersion: 1, releases }))
+  for (const channel of ['stable', 'preview']) {
+    const latest = releases.find(release => runtimeChannel(release.version) === channel)
+    const channelDir = join(harness, 'channels', channel)
+    if (latest) {
+      await mkdir(channelDir, { recursive: true })
+      await writeFile(join(channelDir, 'latest.json'), json(latest))
+      console.log(`${channel}: ${latest.version} (${latest.buildId})`)
+    } else {
+      await rm(join(channelDir, 'latest.json'), { force: true })
+    }
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const artifacts = resolve(options.artifacts ?? 'dist/local-runtime/artifacts')
   const output = resolve(options.output ?? 'dist/local-runtime/upload')
+  if (options.reindex) {
+    await generateCatalog(output)
+    return
+  }
   const version = required(options, 'version')
+  const channel = runtimeChannel(version)
   const buildId = required(options, 'build-id')
   const releaseDate = releaseDateOf(options['release-date'] ?? buildId)
   const minimumDesktopVersion = required(options, 'minimum-desktop-version')
@@ -99,9 +147,7 @@ async function main() {
   if (bundledPluginSets.size !== 1) fail('platform archives contain different bundled plugins')
 
   const releaseDir = join(output, 'harness', 'releases', version, buildId)
-  const channelDir = join(output, 'harness', 'channels', 'stable')
   await mkdir(releaseDir, { recursive: true })
-  await mkdir(channelDir, { recursive: true })
   const assets = {}
   for (const value of metadata) {
     await copyFile(join(artifacts, value.filename), join(releaseDir, value.filename))
@@ -124,9 +170,10 @@ async function main() {
   }
   const json = `${JSON.stringify(manifest, null, 2)}\n`
   await writeFile(join(releaseDir, 'manifest.json'), json)
-  await writeFile(join(channelDir, 'latest.json'), json)
+  await generateCatalog(output)
   console.log(`Upload the contents of ${join(output, 'harness')} to the server /harness path.`)
-  console.log(`Desktop manifest: ${prefix}/channels/stable/latest.json`)
+  console.log(`Desktop manifest: ${prefix}/channels/${channel}/latest.json`)
+  console.log(`Release catalog: ${prefix}/releases/index.json`)
   console.log(`Included archives: ${metadata.map(value => basename(value.filename)).join(', ')}`)
 }
 
