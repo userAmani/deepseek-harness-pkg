@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import test from 'node:test'
+import { spawnSync } from 'node:child_process'
 
 const root = new URL('../', import.meta.url)
 const read = path => readFileSync(new URL(path, root), 'utf8')
@@ -27,6 +28,55 @@ test('release workflows do not apply or require removed runtime patches', () => 
   assert.doesNotMatch(sourceRelease, /\bpatches\b/)
   assert.match(sourceRelease, /7z a [^\r\n]+ node_modules package\.json\r?$/m)
   assert.match(sourceRelease, /zip -r [^\r\n]+ node_modules package\.json\r?$/m)
+})
+
+test('both release paths build native Linux ARM64 and require five assets', () => {
+  for (const file of ['release.yml', 'release-from-source.yml']) {
+    const source = read(`.github/workflows/${file}`)
+    if (file === 'release.yml') {
+      const matrix = source.match(/os: \$\{\{ fromJSON\(inputs\.existing_release != '' && '([^']+)' \|\| '([^']+)'\) \}\}/)
+      assert.ok(matrix, 'conditional build matrix missing')
+      assert.deepEqual(JSON.parse(matrix[1]), ['ubuntu-24.04-arm'])
+      assert.deepEqual(JSON.parse(matrix[2]), ['windows-latest', 'macos-latest', 'macos-15-intel', 'ubuntu-latest', 'ubuntu-24.04-arm'])
+      const assets = JSON.parse(source.match(/ARTIFACT_NAME: \$\{\{ fromJSON\('([^']+)'\)/)[1])
+      assert.deepEqual(Object.values(assets), ['deepseek-harness-pkg-windows.zip', 'deepseek-harness-pkg-macos-arm64.zip', 'deepseek-harness-pkg-macos-x64.zip', 'deepseek-harness-pkg-linux.zip', 'deepseek-harness-pkg-linux-arm64.zip'])
+      assert.match(source, /\)\[matrix\.os\]/)
+    } else {
+      assert.match(source, /os: \[[^\]\r\n]*ubuntu-24\.04-arm[^\]\r\n]*\]/, `${file}: ARM64 runner missing`)
+      assert.match(source, /- os: ubuntu-24\.04-arm\r?\n\s+artifact_name: deepseek-harness-pkg-linux-arm64\.zip/, `${file}: ARM64 asset missing`)
+      assert.match(source, /- os: ubuntu-latest\r?\n\s+artifact_name: deepseek-harness-pkg-linux\.zip/, `${file}: x64 asset changed`)
+    }
+    assert.match(source, /expected=5\b/, `${file}: release must require five assets`)
+    const prune = source.indexOf('- name: Prune node_modules')
+    assert.ok(prune >= 0, `${file}: prune step missing`)
+    const smoke = source.indexOf('- name: Verify deployed Linux ARM64 runtime')
+    assert.ok(smoke > prune, `${file}: smoke must run after pruning`)
+    const step = source.slice(smoke, source.indexOf('- name: Create archive', smoke))
+    assert.match(step, /if: matrix\.os == 'ubuntu-24\.04-arm'/)
+    assert.match(step, /assert\.equal\(process\.arch, 'arm64'\)/)
+    for (const dependency of ['koffi', 'sharp', 'node-pty']) {
+      assert.ok(step.includes(`require('${dependency}')`), `${file}: missing ${dependency} smoke`)
+    }
+    assert.match(step, /node node_modules\/@deepseek-ai\/dsh\/lib\/bin\.js web --help/)
+  }
+})
+
+test('backfill validates the tag and never recreates releases or overwrites assets', () => {
+  const source = read('.github/workflows/release.yml')
+  const guard = source.slice(source.indexOf('- name: Validate existing release'), source.indexOf('- name: Wait for the npm tarball'))
+    .split(/\r?\n/).filter(line => /^\s+(set -euo|\[\[)/.test(line)).map(line => line.trim()).join('\n')
+  for (const [TAG, VERSION, status] of [['dsh-0.2.0-rc.2-123', '0.2.0-rc.2', 0], ['v0.2.0-rc.2', '0.2.0-rc.2', 1], ['dsh-0.2.0-rc.2-123', '0.2.1-alpha.4', 1]]) {
+    const result = spawnSync('bash', ['-c', `${guard}\nprintf validated`], { env: { ...process.env, TAG, VERSION }, encoding: 'utf8', timeout: 5000 })
+    assert.equal(result.status, status, result.stderr)
+    assert.equal(result.stdout, status === 0 ? 'validated' : '')
+  }
+  for (const name of ['Delete stale drafts for this version', 'Create release']) {
+    assert.ok(source.replaceAll('\r\n', '\n').includes(`- name: ${name}\n        if: inputs.existing_release == ''`))
+  }
+  assert.match(source, /\[ "\$\{#assets\[@\]\}" -eq 1 \]/)
+  assert.match(source, /\[ "\$\(basename "\$\{assets\[0\]\}"\)" = deepseek-harness-pkg-linux-arm64\.zip \]/)
+  assert.match(source, /if \[ -n "\$EXISTING_RELEASE" \]; then[\s\S]*?upload_flags=\(\)/)
+  assert.match(source, /gh release upload "\$TAG" "\$asset" "\$\{upload_flags\[@\]\}"/)
 })
 
 test('removed patch scripts and their documentation links stay removed', () => {
