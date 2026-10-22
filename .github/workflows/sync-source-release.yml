@@ -3,8 +3,6 @@ name: Sync GitHub Release Source Pre-release
 # 当上游 GitHub Release 已发布、但对应版本尚未发布到 npm 时，
 # 从上游源码构建并以 pre-release 形式发布。
 on:
-  schedule:
-    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       version:

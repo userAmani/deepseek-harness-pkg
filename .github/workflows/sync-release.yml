@@ -1,13 +1,11 @@
 name: Sync & Release DeepSeek Harness
 
-# 定期检测 npm 上的 @deepseek-ai/dsh 最新版本；发现新版本后自动调用
+# 手动检测 npm 上的 @deepseek-ai/dsh 最新版本；发现新版本后自动调用
 # release.yml 构建四个平台并发布 Release。上游 deepseek-ai/deepseek-harness
 # 目前不发布 GitHub Release，同步信号以 npm 已发布版本为准：取 semver 最高者
 # （覆盖 latest/next 等所有 dist-tag —— 上游可能把新 rc 标在 next 上而 latest
 # 仍是旧版），解析逻辑见 scripts/resolve-latest-dsh-version.mjs。
 on:
-  schedule:
-    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       version:
